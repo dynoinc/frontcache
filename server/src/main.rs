@@ -3,6 +3,7 @@ mod cache;
 mod disk;
 mod index;
 mod membership;
+mod prelude;
 mod ring;
 mod server;
 mod store;
@@ -10,20 +11,17 @@ mod store;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use anyhow::Result;
+use std::net::SocketAddr;
+
 use cache::Cache;
 use clap::Parser;
-use disk::start_purger;
+use disk::{Disk, start_purger};
 use index::Index;
 use membership::K8sMembership;
-use parking_lot::RwLock;
+use prelude::*;
 use ring::ConsistentHashRing;
 use server::CacheServer;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
 use store::Store;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(name = "frontcache-server")]
@@ -32,8 +30,8 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     listen: SocketAddr,
 
-    #[arg(long, default_value = "/tmp/frontcache")]
-    cache_dir: PathBuf,
+    #[arg(long, value_delimiter = ',', default_value = "/tmp/frontcache")]
+    cache_dirs: Vec<PathBuf>,
 
     #[arg(long, default_value = "app=frontcache")]
     label: String,
@@ -44,20 +42,22 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "frontcache_server=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    std::fs::create_dir_all(&args.cache_dir)?;
 
-    let index = Arc::new(Index::open(args.cache_dir.join("index.db"))?);
+    for dir in &args.cache_dirs {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let index = Arc::new(Index::open(args.cache_dirs[0].join("index.db"))?);
     let store = Arc::new(Store::new(args.local_root));
-    let cache = Arc::new(Cache::new(index.clone(), store, args.cache_dir.clone()));
+    let disks = args
+        .cache_dirs
+        .into_iter()
+        .map(Disk::new)
+        .collect::<Result<Vec<_>>>()?;
+    let cache = Arc::new(Cache::new(index.clone(), store, disks));
     let ring = Arc::new(RwLock::new(ConsistentHashRing::new()));
 
     cache.init_from_disk().await?;

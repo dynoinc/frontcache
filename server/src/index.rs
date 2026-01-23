@@ -1,8 +1,9 @@
+use std::path::PathBuf;
+
 use redb::{
     CommitError, Database, DatabaseError, ReadableDatabase, ReadableTable, StorageError,
     TableDefinition, TableError, TransactionError,
 };
-use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -65,12 +66,17 @@ impl Index {
         Ok(Self { db })
     }
 
-    pub fn insert(&self, key: &str, entry: BlockEntry) -> Result<(), IndexError> {
-        let value = format!("{}:{}", entry.state.as_str(), entry.path);
+    pub fn insert<'a>(
+        &self,
+        entries: impl IntoIterator<Item = (&'a str, BlockEntry)>,
+    ) -> Result<(), IndexError> {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
-            table.insert(key, value.as_str())?;
+            for (key, entry) in entries {
+                let value = format!("{}:{}", entry.state.as_str(), entry.path);
+                table.insert(key, value.as_str())?;
+            }
         }
         write_txn.commit()?;
         Ok(())

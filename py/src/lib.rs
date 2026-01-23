@@ -1,6 +1,5 @@
 use frontcache_client::CacheClient;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use pyo3_bytes::PyBytes;
 
 #[pyclass]

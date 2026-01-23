@@ -24,5 +24,5 @@ object_store = { workspace = true }
 kube = { workspace = true }
 k8s-openapi = { workspace = true }
 clap = { workspace = true }
-libc = { workspace = true }
+nix = { workspace = true }
 mimalloc = { workspace = true }

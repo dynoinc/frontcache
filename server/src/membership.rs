@@ -1,11 +1,11 @@
-use crate::ring::ConsistentHashRing;
-use anyhow::Result;
 use futures_util::stream::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
-use kube::runtime::watcher::{Config, Event, watcher};
-use kube::{Api, Client};
-use parking_lot::RwLock;
-use std::sync::Arc;
+use kube::{
+    Api, Client,
+    runtime::watcher::{Config, Event, watcher},
+};
+
+use crate::{prelude::*, ring::ConsistentHashRing};
 
 pub struct K8sMembership {
     client: Client,
@@ -41,7 +41,7 @@ impl K8sMembership {
                     tracing::error!("Watcher error: {}", e);
                     continue;
                 }
-                None => break,
+                None => return Ok(()),
             };
             match event {
                 Event::Apply(pod) => {
@@ -73,7 +73,5 @@ impl K8sMembership {
                 }
             }
         }
-
-        Ok(())
     }
 }

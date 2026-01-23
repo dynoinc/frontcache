@@ -1,8 +1,9 @@
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
-use frontcache_proto::cache_service_client::CacheServiceClient;
-use frontcache_proto::{LookupOwnerRequest, ReadRangeRequest};
+use frontcache_proto::{
+    LookupOwnerRequest, ReadRangeRequest, cache_service_client::CacheServiceClient,
+};
 use futures::future::try_join_all;
 use tonic::transport::Channel;
 

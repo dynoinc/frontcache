@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
+use std::{
+    collections::{BTreeMap, hash_map::RandomState},
+    hash::BuildHasher,
+};
 
 const VIRTUAL_NODES: usize = 150;
 

@@ -1,15 +1,18 @@
-use crate::cache::{BLOCK_SIZE, Cache};
-use crate::ring::ConsistentHashRing;
-use anyhow::{Result, anyhow};
-use frontcache_proto::cache_service_server::{CacheService, CacheServiceServer};
-use frontcache_proto::{LookupOwnerRequest, LookupOwnerResponse};
-use frontcache_proto::{ReadRangeRequest, ReadRangeResponse};
-use parking_lot::RwLock;
 use std::net::SocketAddr;
-use std::sync::Arc;
+
+use anyhow::anyhow;
+use frontcache_proto::{
+    LookupOwnerRequest, LookupOwnerResponse, ReadRangeRequest, ReadRangeResponse,
+    cache_service_server::{CacheService, CacheServiceServer},
+};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, transport::Server};
+
+use crate::{
+    cache::{BLOCK_SIZE, Cache},
+    prelude::*,
+    ring::ConsistentHashRing,
+};
 
 const CHUNK_SIZE: usize = 256 * 1024;
 

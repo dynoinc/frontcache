@@ -1,59 +1,81 @@
-use crate::cache::Cache;
-use anyhow::Result;
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
-use std::sync::Arc;
+use nix::sys::statvfs::statvfs;
 use tokio::time::{Duration, sleep};
 
+use crate::{
+    cache::{BLOCK_SIZE, Cache},
+    prelude::*,
+};
+
+#[derive(Copy, Clone)]
 pub struct DiskStats {
-    pub used: u64,
-    pub threshold: u64,
+    pub available: u64,
+    pub total: u64,
+}
+
+pub struct Disk {
+    path: PathBuf,
+    stats: RwLock<DiskStats>,
+}
+
+impl Disk {
+    pub fn new(path: PathBuf) -> Result<Arc<Self>> {
+        let stats = get_disk_stats(&path)?;
+        Ok(Arc::new(Self {
+            path,
+            stats: RwLock::new(stats),
+        }))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn available(&self) -> u64 {
+        self.stats.read().available
+    }
+
+    pub async fn update_stats(&self) -> Result<DiskStats> {
+        let stats = get_disk_stats(&self.path)?;
+        *self.stats.write() = stats;
+        Ok(stats)
+    }
+}
+
+pub fn select_disk(disks: &[Arc<Disk>]) -> &Path {
+    disks
+        .iter()
+        .max_by_key(|d| d.available())
+        .map(|d| d.path())
+        .unwrap()
 }
 
 pub fn get_disk_stats(path: &Path) -> Result<DiskStats> {
-    let c_path = CString::new(path.as_os_str().as_bytes())?;
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-    if rc != 0 {
-        return Err(anyhow::anyhow!(
-            "statvfs failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    let stat = statvfs(path)?;
+    let block_size = stat.fragment_size() as u64;
+    let total = block_size.saturating_mul(stat.blocks() as u64);
+    let available = block_size.saturating_mul(stat.blocks_available() as u64);
 
-    let block_size = if stat.f_frsize > 0 {
-        stat.f_frsize as u64
-    } else {
-        stat.f_bsize as u64
-    };
-
-    let total = block_size.saturating_mul(stat.f_blocks as u64);
-    let available = block_size.saturating_mul(stat.f_bavail as u64);
-    let used = total.saturating_sub(available);
-    let threshold = (total * 95) / 100;
-
-    Ok(DiskStats { used, threshold })
-}
-
-async fn purge_until_below_threshold(cache: &Cache) -> Result<()> {
-    loop {
-        let stats = get_disk_stats(cache.cache_dir())?;
-        if stats.used < stats.threshold {
-            return Ok(());
-        }
-        if !cache.purge_one().await? {
-            return Ok(());
-        }
-    }
+    Ok(DiskStats { available, total })
 }
 
 pub fn start_purger(cache: Arc<Cache>) {
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(10)).await;
-            if let Err(e) = purge_until_below_threshold(&cache).await {
-                tracing::error!("Purger failed: {}", e);
+
+            for disk in cache.disks() {
+                let stats = disk.update_stats().await;
+                let blocks_to_purge = stats
+                    .map(|s| {
+                        let min_free = (s.total * 5) / 100;
+                        let space_to_free = min_free.saturating_sub(s.available);
+                        space_to_free.div_ceil(BLOCK_SIZE) as usize
+                    })
+                    .unwrap_or(0);
+
+                if let Err(e) = cache.purge_many_from(disk.path(), blocks_to_purge).await {
+                    tracing::error!("Purge failed for {:?}: {}", disk.path(), e);
+                }
             }
         }
     });

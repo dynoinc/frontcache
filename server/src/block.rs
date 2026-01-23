@@ -1,11 +1,10 @@
-use crate::index::Index;
+use std::fs::File;
+
 use bytes::Bytes;
 use memmap2::Mmap;
-use std::fs::File;
-use std::io::Result;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+
+use crate::{index::Index, prelude::*};
 
 pub struct Block {
     path: PathBuf,

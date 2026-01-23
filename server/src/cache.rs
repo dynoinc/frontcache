@@ -1,22 +1,24 @@
-use crate::block::Block;
-use crate::index::{BlockEntry, BlockState, Index, IndexError};
-use crate::store::{Store, StoreError};
-use anyhow::{Result, bail};
-use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
+use anyhow::bail;
+use dashmap::{DashMap, mapref::entry::Entry};
 use futures_util::future::{FutureExt, Shared};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+use crate::{
+    block::Block,
+    disk::{Disk, select_disk},
+    index::{BlockEntry, BlockState, Index, IndexError},
+    prelude::*,
+    store::{Store, StoreError},
+};
 
 pub const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
 
 #[derive(Error, Debug, Clone)]
 pub enum DownloadError {
     #[error("Failed to create block file")]
-    CreateFile(#[source] Arc<std::io::Error>),
+    CreateFile(#[source] Arc<anyhow::Error>),
     #[error("Failed to update index")]
     IndexUpdate(#[source] Arc<IndexError>),
     #[error("Failed to read from store")]
@@ -38,7 +40,7 @@ pub struct Cache {
     states: DashMap<BlockKey, CacheState>,
     index: Arc<Index>,
     store: Arc<Store>,
-    cache_dir: PathBuf,
+    disks: Vec<Arc<Disk>>,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -48,17 +50,17 @@ pub struct BlockKey {
 }
 
 impl Cache {
-    pub fn new(index: Arc<Index>, store: Arc<Store>, cache_dir: PathBuf) -> Self {
+    pub fn new(index: Arc<Index>, store: Arc<Store>, disks: Vec<Arc<Disk>>) -> Self {
         Self {
             states: DashMap::new(),
             index,
             store,
-            cache_dir,
+            disks,
         }
     }
 
-    pub fn cache_dir(&self) -> &Path {
-        &self.cache_dir
+    pub fn disks(&self) -> &[Arc<Disk>] {
+        &self.disks
     }
 
     pub async fn init_from_disk(&self) -> Result<()> {
@@ -66,12 +68,12 @@ impl Cache {
             match entry.state {
                 BlockState::Downloading | BlockState::Purging => {
                     tracing::warn!("Found incomplete operation, cleaning up: {}", key);
-                    let block_path = self.cache_dir.join(&entry.path);
+                    let block_path = PathBuf::from(&entry.path);
                     let _ = tokio::fs::remove_file(&block_path).await;
                     self.index.delete(&key)?;
                 }
                 BlockState::Downloaded => {
-                    let block_path = self.cache_dir.join(&entry.path);
+                    let block_path = PathBuf::from(&entry.path);
                     if !block_path.exists() {
                         bail!("Block {key} in index is missing from disk");
                     }
@@ -159,15 +161,17 @@ impl Cache {
         tracing::info!("Downloading block {}:{}", key.object, key.block_offset);
 
         let index_key = key.to_index_key();
+        let cache_dir = select_disk(&self.disks);
+        let block_path = cache_dir.join(block_filename);
 
         self.index
-            .insert(
-                &index_key,
+            .insert([(
+                index_key.as_str(),
                 BlockEntry {
-                    path: block_filename.to_string(),
+                    path: block_path.to_string_lossy().to_string(),
                     state: BlockState::Downloading,
                 },
-            )
+            )])
             .map_err(|e| DownloadError::IndexUpdate(Arc::new(e)))?;
 
         let data = match self
@@ -181,8 +185,6 @@ impl Cache {
                 return Err(DownloadError::StoreRead(Arc::new(e)));
             }
         };
-
-        let block_path = self.cache_dir.join(block_filename);
         let block = match Block::new(
             block_path.clone(),
             data,
@@ -199,13 +201,13 @@ impl Cache {
             }
         };
 
-        if let Err(e) = self.index.insert(
-            &index_key,
+        if let Err(e) = self.index.insert([(
+            index_key.as_str(),
             BlockEntry {
-                path: block_filename.to_string(),
+                path: block_path.to_string_lossy().to_string(),
                 state: BlockState::Downloaded,
             },
-        ) {
+        )]) {
             let _ = tokio::fs::remove_file(block.path()).await;
             let _ = self.index.delete(&index_key);
             return Err(DownloadError::IndexUpdate(Arc::new(e)));
@@ -214,30 +216,44 @@ impl Cache {
         Ok(Arc::new(block))
     }
 
-    pub async fn purge_one(&self) -> Result<bool> {
-        let victim = self
+    pub async fn purge_many_from(&self, cache_dir: &Path, count: usize) -> Result<()> {
+        let victims: Vec<_> = self
             .index
             .list_all()?
             .into_iter()
-            .find(|(_, entry)| entry.state == BlockState::Downloaded);
+            .filter(|(_, entry)| {
+                entry.state == BlockState::Downloaded
+                    && PathBuf::from(&entry.path).starts_with(cache_dir)
+            })
+            .take(count)
+            .collect();
 
-        let (index_key, entry) = match victim {
-            Some(victim) => victim,
-            None => return Ok(false),
-        };
+        if victims.is_empty() {
+            return Ok(());
+        }
 
-        self.index.insert(
-            &index_key,
-            BlockEntry {
-                path: entry.path.clone(),
-                state: BlockState::Purging,
-            },
-        )?;
+        let updates: Vec<_> = victims
+            .iter()
+            .map(|(key, entry)| {
+                (
+                    key.as_str(),
+                    BlockEntry {
+                        path: entry.path.clone(),
+                        state: BlockState::Purging,
+                    },
+                )
+            })
+            .collect();
 
-        let block_key = BlockKey::from_index_key(&index_key)
-            .ok_or_else(|| anyhow::anyhow!("Invalid index key: {}", index_key))?;
-        self.states.remove(&block_key);
-        Ok(true)
+        self.index.insert(updates)?;
+
+        for (index_key, _) in victims {
+            if let Some(block_key) = BlockKey::from_index_key(&index_key) {
+                self.states.remove(&block_key);
+            }
+        }
+
+        Ok(())
     }
 }
 
