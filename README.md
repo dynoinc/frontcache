@@ -46,7 +46,7 @@ import frontcache
 async def main():
     client = await frontcache.connect(8080)
 
-    data = await client.read("file://datasets/model.bin", 0, 1024 * 1024)
+    data = await client.read_range("file://datasets/model.bin", 0, 1024 * 1024)
     print(f"Read {len(data)} bytes")
 
 asyncio.run(main())

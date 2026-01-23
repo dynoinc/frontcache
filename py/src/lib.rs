@@ -10,7 +10,7 @@ struct Client {
 
 #[pymethods]
 impl Client {
-    fn read<'py>(
+    fn read_range<'py>(
         &self,
         py: Python<'py>,
         key: String,
