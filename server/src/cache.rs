@@ -92,10 +92,7 @@ impl Cache {
 
     pub async fn get(&self, object: &str, offset: u64) -> Result<Arc<Block>> {
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
-        let key = BlockKey {
-            object: object.to_string(),
-            block_offset,
-        };
+        let key = (object.to_string(), block_offset);
 
         match self.states.entry(key.clone()) {
             Entry::Occupied(entry) => match entry.get() {
@@ -153,13 +150,13 @@ impl Cache {
         key: &BlockKey,
         block_filename: &str,
     ) -> Result<Arc<Block>, DownloadError> {
-        tracing::info!("Downloading block {}:{}", key.object, key.block_offset);
+        tracing::info!("Downloading block {key:?}");
 
         let cache_dir = select_disk(&self.disks);
         let block_path = cache_dir.join(block_filename);
 
         self.index
-            .insert([(
+            .upsert([(
                 key.clone(),
                 BlockEntry {
                     path: block_path.to_string_lossy().to_string(),
@@ -168,11 +165,8 @@ impl Cache {
             )])
             .map_err(|e| DownloadError::IndexUpdate(Arc::new(e)))?;
 
-        let data = match self
-            .store
-            .read_range(&key.object, key.block_offset, BLOCK_SIZE)
-            .await
-        {
+        let (object_key, offset) = key;
+        let data = match self.store.read_range(object_key, *offset, BLOCK_SIZE).await {
             Ok(data) => data,
             Err(e) => {
                 let _ = self.index.delete(key);
@@ -189,7 +183,7 @@ impl Cache {
                 }
             };
 
-        if let Err(e) = self.index.insert([(
+        if let Err(e) = self.index.upsert([(
             key.clone(),
             BlockEntry {
                 path: block_path.to_string_lossy().to_string(),
@@ -219,20 +213,15 @@ impl Cache {
             return Ok(());
         }
 
-        let updates: Vec<_> = victims
-            .iter()
-            .map(|(key, entry)| {
-                (
-                    key.clone(),
-                    BlockEntry {
-                        path: entry.path.clone(),
-                        state: BlockState::Purging,
-                    },
-                )
-            })
-            .collect();
-
-        self.index.insert(updates)?;
+        self.index.upsert(victims.iter().map(|(key, entry)| {
+            (
+                key.clone(),
+                BlockEntry {
+                    path: entry.path.clone(),
+                    state: BlockState::Purging,
+                },
+            )
+        }))?;
 
         victims
             .into_iter()

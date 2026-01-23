@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use redb::{
-    CommitError, Database, DatabaseError, Key, ReadTransaction, ReadableDatabase, ReadableTable,
-    StorageError, TableDefinition, TableError, TransactionError, TypeName, Value,
+    CommitError, Database, DatabaseError, ReadTransaction, ReadableDatabase, ReadableTable,
+    StorageError, TableDefinition, TableError, TransactionError,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -19,9 +19,13 @@ pub enum IndexError {
     Commit(#[from] CommitError),
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] Box<bincode::ErrorKind>),
 }
 
-const BLOCKS_TABLE: TableDefinition<BlockKey, BlockEntry> = TableDefinition::new("blocks");
+pub type BlockKey = (String, u64);
+
+const BLOCKS_TABLE: TableDefinition<BlockKey, &[u8]> = TableDefinition::new("blocks");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockState {
@@ -34,74 +38,6 @@ pub enum BlockState {
 pub struct BlockEntry {
     pub path: String,
     pub state: BlockState,
-}
-
-impl Value for BlockEntry {
-    type SelfType<'a> = BlockEntry;
-    type AsBytes<'a> = Vec<u8>;
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        bincode::deserialize(data).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'a,
-        Self: 'b,
-    {
-        bincode::serialize(value).unwrap()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("BlockEntry")
-    }
-}
-
-#[derive(Hash, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
-pub struct BlockKey {
-    pub object: String,
-    pub block_offset: u64,
-}
-
-impl Key for BlockKey {
-    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
-        data1.cmp(data2)
-    }
-}
-
-impl Value for BlockKey {
-    type SelfType<'a> = BlockKey;
-    type AsBytes<'a> = Vec<u8>;
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        bincode::deserialize(data).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'a,
-        Self: 'b,
-    {
-        bincode::serialize(value).unwrap()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("BlockKey")
-    }
 }
 
 pub struct Index {
@@ -130,15 +66,16 @@ impl Index {
         Ok(Self { db })
     }
 
-    pub fn insert(
+    pub fn upsert(
         &self,
         entries: impl IntoIterator<Item = (BlockKey, BlockEntry)>,
     ) -> Result<(), IndexError> {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
-            for (key, entry) in entries {
-                table.insert(&key, &entry)?;
+            for ((object, offset), entry) in entries {
+                let value = bincode::serialize(&entry)?;
+                table.insert((object, offset), value.as_slice())?;
             }
         }
         write_txn.commit()?;
@@ -167,7 +104,9 @@ impl Index {
         let iter: Box<dyn Iterator<Item = (BlockKey, BlockEntry)>> = unsafe {
             std::mem::transmute(Box::new(raw_iter.filter_map(|item| {
                 let (key, value) = item.ok()?;
-                Some((key.value(), value.value()))
+                let (object, offset) = key.value();
+                let entry: BlockEntry = bincode::deserialize(value.value()).ok()?;
+                Some(((object.to_string(), offset), entry))
             }))
                 as Box<dyn Iterator<Item = (BlockKey, BlockEntry)>>)
         };
