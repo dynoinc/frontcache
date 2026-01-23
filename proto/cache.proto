@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package cache;
+
+service CacheService {
+  rpc LookupOwner(LookupOwnerRequest) returns (LookupOwnerResponse);
+  rpc ReadRange(ReadRangeRequest) returns (stream ReadRangeResponse);
+}
+
+message LookupOwnerRequest {
+  string key = 1;
+  uint64 offset = 2;
+}
+
+message LookupOwnerResponse {
+  string addr = 1;
+}
+
+message ReadRangeRequest {
+  string key = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+}
+
+message ReadRangeResponse {
+  bytes data = 1;
+}

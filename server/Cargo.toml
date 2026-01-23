@@ -1,0 +1,28 @@
+[package]
+name = "frontcache-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frontcache-proto = { path = "../proto" }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+futures-util = { workspace = true }
+prost = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+memmap2 = { workspace = true }
+redb = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+object_store = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+mimalloc = { workspace = true }

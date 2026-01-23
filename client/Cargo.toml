@@ -1,0 +1,12 @@
+[package]
+name = "frontcache-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frontcache-proto = { path = "../proto" }
+tonic = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
