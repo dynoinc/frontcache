@@ -84,7 +84,5 @@ async fn main() -> Result<()> {
         .serve(args.listen)
         .await?;
 
-    // Prevent cleanup of blocks on shutdown.
-    std::mem::forget(cache);
     Ok(())
 }

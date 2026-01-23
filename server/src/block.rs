@@ -1,24 +1,31 @@
-use std::fs::File;
+use std::{
+    fs::File,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use bytes::Bytes;
 use memmap2::Mmap;
 use tokio::io::AsyncWriteExt;
 
-use crate::{index::Index, prelude::*};
+use crate::{
+    index::{BlockKey, Index},
+    prelude::*,
+};
 
 pub struct Block {
     path: PathBuf,
     _file: File,
     mmap: Mmap,
-    index_key: String,
+    block_key: BlockKey,
     index: Arc<Index>,
+    should_delete_on_drop: AtomicBool,
 }
 
 impl Block {
     pub async fn new(
         path: PathBuf,
         data: Bytes,
-        index_key: String,
+        block_key: BlockKey,
         index: Arc<Index>,
     ) -> Result<Self> {
         let mut file = tokio::fs::OpenOptions::new()
@@ -39,12 +46,13 @@ impl Block {
             path,
             _file: std_file,
             mmap,
-            index_key,
+            block_key,
             index,
+            should_delete_on_drop: AtomicBool::new(false),
         })
     }
 
-    pub fn from_disk(path: PathBuf, index_key: String, index: Arc<Index>) -> Result<Self> {
+    pub fn from_disk(path: PathBuf, block_key: BlockKey, index: Arc<Index>) -> Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
@@ -52,8 +60,9 @@ impl Block {
             path,
             _file: file,
             mmap,
-            index_key,
+            block_key,
             index,
+            should_delete_on_drop: AtomicBool::new(false),
         })
     }
 
@@ -64,11 +73,17 @@ impl Block {
     pub fn data(&self) -> &[u8] {
         &self.mmap[..]
     }
+
+    pub fn delete_on_drop(&self) {
+        self.should_delete_on_drop.store(true, Ordering::Release);
+    }
 }
 
 impl Drop for Block {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-        let _ = self.index.delete(&self.index_key);
+        if self.should_delete_on_drop.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(&self.path);
+            let _ = self.index.delete(&self.block_key);
+        }
     }
 }

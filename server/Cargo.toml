@@ -26,3 +26,5 @@ k8s-openapi = { workspace = true }
 clap = { workspace = true }
 nix = { workspace = true }
 mimalloc = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }

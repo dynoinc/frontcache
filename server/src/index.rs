@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use redb::{
-    CommitError, Database, DatabaseError, ReadableDatabase, ReadableTable, StorageError,
-    TableDefinition, TableError, TransactionError,
+    CommitError, Database, DatabaseError, Key, ReadTransaction, ReadableDatabase, ReadableTable,
+    StorageError, TableDefinition, TableError, TransactionError, TypeName, Value,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -20,41 +21,104 @@ pub enum IndexError {
     Storage(#[from] StorageError),
 }
 
-const BLOCKS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("blocks");
+const BLOCKS_TABLE: TableDefinition<BlockKey, BlockEntry> = TableDefinition::new("blocks");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockState {
     Downloading,
     Downloaded,
     Purging,
 }
 
-impl BlockState {
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "downloading" => Some(BlockState::Downloading),
-            "downloaded" => Some(BlockState::Downloaded),
-            "purging" => Some(BlockState::Purging),
-            _ => None,
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        match self {
-            BlockState::Downloading => "downloading",
-            BlockState::Downloaded => "downloaded",
-            BlockState::Purging => "purging",
-        }
-    }
-}
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockEntry {
     pub path: String,
     pub state: BlockState,
 }
 
+impl Value for BlockEntry {
+    type SelfType<'a> = BlockEntry;
+    type AsBytes<'a> = Vec<u8>;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        bincode::deserialize(data).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        bincode::serialize(value).unwrap()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("BlockEntry")
+    }
+}
+
+#[derive(Hash, Eq, PartialEq, Clone, Debug, Serialize, Deserialize)]
+pub struct BlockKey {
+    pub object: String,
+    pub block_offset: u64,
+}
+
+impl Key for BlockKey {
+    fn compare(data1: &[u8], data2: &[u8]) -> std::cmp::Ordering {
+        data1.cmp(data2)
+    }
+}
+
+impl Value for BlockKey {
+    type SelfType<'a> = BlockKey;
+    type AsBytes<'a> = Vec<u8>;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        bincode::deserialize(data).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        bincode::serialize(value).unwrap()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("BlockKey")
+    }
+}
+
 pub struct Index {
     db: Database,
+}
+
+pub struct AllBlocksIter {
+    _txn: ReadTransaction,
+    iter: Box<dyn Iterator<Item = (BlockKey, BlockEntry)>>,
+}
+
+impl Iterator for AllBlocksIter {
+    type Item = (BlockKey, BlockEntry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
 }
 
 impl Index {
@@ -66,23 +130,22 @@ impl Index {
         Ok(Self { db })
     }
 
-    pub fn insert<'a>(
+    pub fn insert(
         &self,
-        entries: impl IntoIterator<Item = (&'a str, BlockEntry)>,
+        entries: impl IntoIterator<Item = (BlockKey, BlockEntry)>,
     ) -> Result<(), IndexError> {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
             for (key, entry) in entries {
-                let value = format!("{}:{}", entry.state.as_str(), entry.path);
-                table.insert(key, value.as_str())?;
+                table.insert(&key, &entry)?;
             }
         }
         write_txn.commit()?;
         Ok(())
     }
 
-    pub fn delete(&self, key: &str) -> Result<(), IndexError> {
+    pub fn delete(&self, key: &BlockKey) -> Result<(), IndexError> {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
@@ -92,28 +155,26 @@ impl Index {
         Ok(())
     }
 
-    pub fn list_all(&self) -> Result<Vec<(String, BlockEntry)>, IndexError> {
+    pub fn list_all(&self) -> Result<AllBlocksIter, IndexError> {
         let read_txn = self.db.begin_read()?;
         let table = read_txn.open_table(BLOCKS_TABLE)?;
+        let raw_iter = table.iter()?;
 
-        table
-            .iter()?
-            .filter_map(|item| {
+        // SAFETY: We extend the iterator's lifetime to 'static, but this is safe because:
+        // 1. The iterator is stored in AllBlocksIter alongside _txn
+        // 2. _txn is declared before iter in the struct, so it will be dropped AFTER iter
+        // 3. This ensures the transaction outlives the iterator
+        let iter: Box<dyn Iterator<Item = (BlockKey, BlockEntry)>> = unsafe {
+            std::mem::transmute(Box::new(raw_iter.filter_map(|item| {
                 let (key, value) = item.ok()?;
-                let value_str = value.value();
-                let parts: Vec<&str> = value_str.splitn(2, ':').collect();
-                if parts.len() != 2 {
-                    return None;
-                }
-                let state = BlockState::from_str(parts[0])?;
-                Some(Ok((
-                    key.value().to_string(),
-                    BlockEntry {
-                        path: parts[1].to_string(),
-                        state,
-                    },
-                )))
-            })
-            .collect()
+                Some((key.value(), value.value()))
+            }))
+                as Box<dyn Iterator<Item = (BlockKey, BlockEntry)>>)
+        };
+
+        Ok(AllBlocksIter {
+            _txn: read_txn,
+            iter,
+        })
     }
 }
