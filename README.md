@@ -1,4 +1,4 @@
-# FrontCache
+# FrontCache [![Check](https://github.com/dynoinc/frontcache/actions/workflows/check.yml/badge.svg)](https://github.com/dynoinc/frontcache/actions/workflows/check.yml)
 
 Distributed pull-through cache for object storage (S3/GCS) written in < 2000 lines of code.
 

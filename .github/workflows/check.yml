@@ -1,0 +1,50 @@
+name: Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Protoc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler libprotobuf-dev --no-install-recommends
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        protoc --version
+
+    - name: Setup Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Setup Just
+      uses: extractions/setup-just@v2
+
+    - name: Install cargo-outdated
+      run: cargo install cargo-outdated --locked
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit --locked
+
+    - name: Run just check
+      run: just check
+
+    - name: Verify no unwanted changes
+      run: |
+        if [[ -n $(git status --porcelain) ]]; then
+          echo "Error: Unwanted changes detected after running 'just check'"
+          git status
+          git diff
+          exit 1
+        fi
