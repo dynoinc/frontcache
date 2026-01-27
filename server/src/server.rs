@@ -63,7 +63,11 @@ impl CacheServer {
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
         let svc = CacheServiceServer::new(self);
-        Server::builder().add_service(svc).serve(addr).await?;
+        Server::builder()
+            .layer(frontcache_metrics::layer())
+            .add_service(svc)
+            .serve(addr)
+            .await?;
         Ok(())
     }
 }
@@ -75,7 +79,6 @@ impl CacheService for CacheServer {
         request: Request<LookupOwnerRequest>,
     ) -> Result<Response<LookupOwnerResponse>, Status> {
         let req = request.get_ref();
-
         let block_offset = (req.offset / BLOCK_SIZE) * BLOCK_SIZE;
 
         let ring = self.ring.read();

@@ -5,22 +5,29 @@ use frontcache_proto::{
     LookupOwnerRequest, ReadRangeRequest, cache_service_client::CacheServiceClient,
 };
 use futures::future::try_join_all;
+use std::sync::Arc;
 use tonic::transport::Channel;
+use tower::ServiceBuilder;
 
 const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
+
+type MetricsChannel = frontcache_metrics::RpcMetricsService<Channel>;
 
 #[derive(Clone)]
 pub struct CacheClient {
     local_addr: String,
-    connections: DashMap<String, CacheServiceClient<Channel>>,
+    connections: DashMap<String, CacheServiceClient<MetricsChannel>>,
+    _provider: Arc<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl CacheClient {
     pub async fn new(port: u16) -> Result<Self> {
+        let provider = frontcache_metrics::init("frontcache-client");
         let local_addr = format!("localhost:{}", port);
         Ok(Self {
             local_addr,
             connections: DashMap::new(),
+            _provider: Arc::new(provider),
         })
     }
 
@@ -41,6 +48,7 @@ impl CacheClient {
                 let mut local = self_clone
                     .get_or_create_connection(&self_clone.local_addr)
                     .await?;
+
                 let owner = local
                     .lookup_owner(LookupOwnerRequest {
                         key: key.clone(),
@@ -73,21 +81,32 @@ impl CacheClient {
         match chunks.as_slice() {
             [single] => Ok(single.clone()),
             _ => {
-                let mut result = BytesMut::with_capacity(length as usize);
+                let mut buf = BytesMut::with_capacity(length as usize);
                 for chunk in chunks {
-                    result.extend_from_slice(&chunk);
+                    buf.extend_from_slice(&chunk);
                 }
-                Ok(result.freeze())
+                Ok(buf.freeze())
             }
         }
     }
 
-    async fn get_or_create_connection(&self, addr: &str) -> Result<CacheServiceClient<Channel>> {
+    async fn get_or_create_connection(
+        &self,
+        addr: &str,
+    ) -> Result<CacheServiceClient<MetricsChannel>> {
         if let Some(client) = self.connections.get(addr) {
             return Ok(client.clone());
         }
 
-        let client = CacheServiceClient::connect(format!("http://{}", addr)).await?;
+        let channel = Channel::from_shared(format!("http://{}", addr))?
+            .connect()
+            .await?;
+
+        let channel = ServiceBuilder::new()
+            .layer(frontcache_metrics::layer())
+            .service(channel);
+
+        let client = CacheServiceClient::new(channel);
         self.connections.insert(addr.to_string(), client.clone());
         Ok(client)
     }

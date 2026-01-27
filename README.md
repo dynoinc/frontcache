@@ -1,6 +1,6 @@
 # FrontCache
 
-Distributed pull-through cache for object storage (S3/GCS) written in < 1000 lines of code.
+Distributed pull-through cache for object storage (S3/GCS) written in < 2000 lines of code.
 
 ## Features
 
@@ -8,6 +8,9 @@ Distributed pull-through cache for object storage (S3/GCS) written in < 1000 lin
 - Consistent hashing for distributed block ownership
 - Kubernetes auto-discovery
 - Memory-mapped zero-copy reads
+- OpenTelemetry metrics for observability
+
+Run `just check` to build, test, and verify the project.
 
 ## Usage
 
@@ -51,6 +54,23 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## Observability
+
+FrontCache includes OpenTelemetry metrics for monitoring cache performance, upstream store operations, and RPC calls.
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export metrics (e.g., `http://localhost:4317`). If unset, a no-op provider is used.
+
+### Metrics
+
+**Client & Server Metrics:**
+- `rpc_duration_seconds` - RPC request duration (labels: rpc.method, rpc.grpc.status)
+
+**Server Metrics:**
+- `store_read_duration_seconds` - Upstream store read duration
+- `store_read_bytes` - Bytes read from upstream store
+- `cache_get_duration_seconds` - Cache operation duration
+- `disk_available_bytes` - Available disk space
 
 ## License
 

@@ -20,7 +20,7 @@ pub enum IndexError {
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
     #[error("Serialization error: {0}")]
-    Serialization(#[from] Box<bincode::ErrorKind>),
+    Serialization(#[from] serde_json::Error),
 }
 
 pub type BlockKey = (String, u64);
@@ -74,7 +74,7 @@ impl Index {
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
             for ((object, offset), entry) in entries {
-                let value = bincode::serialize(&entry)?;
+                let value = serde_json::to_vec(&entry)?;
                 table.insert((object, offset), value.as_slice())?;
             }
         }
@@ -105,7 +105,7 @@ impl Index {
             std::mem::transmute(Box::new(raw_iter.filter_map(|item| {
                 let (key, value) = item.ok()?;
                 let (object, offset) = key.value();
-                let entry: BlockEntry = bincode::deserialize(value.value()).ok()?;
+                let entry: BlockEntry = serde_json::from_slice(value.value()).ok()?;
                 Some(((object.to_string(), offset), entry))
             }))
                 as Box<dyn Iterator<Item = (BlockKey, BlockEntry)>>)

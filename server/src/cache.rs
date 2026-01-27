@@ -1,6 +1,9 @@
+use std::time::Instant;
+
 use anyhow::bail;
 use dashmap::{DashMap, mapref::entry::Entry};
 use futures_util::future::{FutureExt, Shared};
+use opentelemetry::KeyValue;
 use thiserror::Error;
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -91,23 +94,39 @@ impl Cache {
     }
 
     pub async fn get(&self, object: &str, offset: u64) -> Result<Arc<Block>> {
+        let start = Instant::now();
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let key = (object.to_string(), block_offset);
 
         match self.states.entry(key.clone()) {
             Entry::Occupied(entry) => match entry.get() {
-                CacheState::Ready { block, .. } => Ok(block.clone()),
+                CacheState::Ready { block, .. } => {
+                    let m = frontcache_metrics::get();
+                    m.cache_get_duration.record(
+                        start.elapsed().as_secs_f64(),
+                        &[KeyValue::new("result", "hit")],
+                    );
+                    Ok(block.clone())
+                }
                 CacheState::Downloading { result } => {
                     let result_future = result.clone();
                     drop(entry);
 
-                    match result_future.await {
+                    let outcome = match result_future.await {
                         Ok(arc_result) => match arc_result.as_ref() {
                             Ok(block) => Ok(block.clone()),
                             Err(e) => Err(e.clone().into()),
                         },
                         Err(_) => Err(anyhow::anyhow!("Download task dropped")),
-                    }
+                    };
+
+                    let m = frontcache_metrics::get();
+                    m.cache_get_duration.record(
+                        start.elapsed().as_secs_f64(),
+                        &[KeyValue::new("result", "wait")],
+                    );
+
+                    outcome
                 }
             },
             Entry::Vacant(entry) => {
@@ -137,6 +156,13 @@ impl Cache {
                 }
 
                 let _ = tx.send(shared_result.clone());
+
+                let m = frontcache_metrics::get();
+                m.cache_get_duration.record(
+                    start.elapsed().as_secs_f64(),
+                    &[KeyValue::new("result", "miss")],
+                );
+
                 match shared_result.as_ref() {
                     Ok(block) => Ok(block.clone()),
                     Err(e) => Err(e.clone().into()),

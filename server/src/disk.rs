@@ -1,4 +1,5 @@
 use nix::sys::statvfs::statvfs;
+use opentelemetry::KeyValue;
 use tokio::time::{Duration, sleep};
 
 use crate::{
@@ -37,6 +38,13 @@ impl Disk {
     pub async fn update_stats(&self) -> Result<DiskStats> {
         let stats = get_disk_stats(&self.path)?;
         *self.stats.write() = stats;
+
+        let m = frontcache_metrics::get();
+        m.disk_available_bytes.record(
+            stats.available as f64,
+            &[KeyValue::new("path", self.path.display().to_string())],
+        );
+
         Ok(stats)
     }
 }

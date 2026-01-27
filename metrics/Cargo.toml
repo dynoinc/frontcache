@@ -1,0 +1,13 @@
+[package]
+name = "frontcache-metrics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }

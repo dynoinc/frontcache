@@ -43,6 +43,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    let meter_provider = frontcache_metrics::init("frontcache-server");
 
     let args = Args::parse();
 
@@ -84,5 +85,6 @@ async fn main() -> Result<()> {
         .serve(args.listen)
         .await?;
 
+    meter_provider.shutdown()?;
     Ok(())
 }

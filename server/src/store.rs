@@ -1,9 +1,12 @@
+use std::time::Instant;
+
 use bytes::Bytes;
 use dashmap::DashMap;
 use object_store::{
     Error as ObjectStoreError, ObjectStore as ObjStore, ObjectStoreExt, aws::AmazonS3Builder,
     gcp::GoogleCloudStorageBuilder, local::LocalFileSystem, path::Path as ObjPath,
 };
+use opentelemetry::KeyValue;
 use thiserror::Error;
 
 use crate::prelude::*;
@@ -97,11 +100,34 @@ impl Store {
         offset: u64,
         length: u64,
     ) -> Result<Bytes, StoreError> {
+        let start = Instant::now();
         let (provider, bucket, path) = Self::parse_key(key)?;
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
         let range = offset..(offset + length);
-        let result = backend.get_range(&obj_path, range).await?;
-        Ok(result)
+        let result = backend.get_range(&obj_path, range).await;
+
+        let m = frontcache_metrics::get();
+        let status = result.as_ref().map(|_| "ok").unwrap_or_else(|e| {
+            if matches!(e, ObjectStoreError::NotFound { .. }) {
+                "not_found"
+            } else {
+                "error"
+            }
+        });
+        m.store_read_duration.record(
+            start.elapsed().as_secs_f64(),
+            &[
+                KeyValue::new("provider", provider.clone()),
+                KeyValue::new("status", status),
+            ],
+        );
+
+        if let Ok(ref bytes) = result {
+            m.store_read_bytes
+                .record(bytes.len() as f64, &[KeyValue::new("provider", provider)]);
+        }
+
+        result.map_err(Into::into)
     }
 }
