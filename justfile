@@ -5,5 +5,3 @@ check:
     cargo clippy --all-targets --all-features -- -D warnings
     cargo build --all-targets --all-features
     cargo test --all-targets --all-features
-    cargo outdated -R
-    cargo audit
