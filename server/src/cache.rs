@@ -101,6 +101,7 @@ impl Cache {
         match self.states.entry(key.clone()) {
             Entry::Occupied(entry) => match entry.get() {
                 CacheState::Ready { block, .. } => {
+                    block.record_access();
                     let m = frontcache_metrics::get();
                     m.cache_get_duration.record(
                         start.elapsed().as_secs_f64(),
@@ -225,38 +226,44 @@ impl Cache {
     }
 
     pub async fn purge_many_from(&self, cache_dir: &Path, count: usize) -> Result<()> {
-        let victims: Vec<_> = self
-            .index
-            .list_all()?
-            .filter(|(_, entry)| {
-                entry.state == BlockState::Downloaded
-                    && PathBuf::from(&entry.path).starts_with(cache_dir)
-            })
-            .take(count)
-            .collect();
+        let mut heap = std::collections::BinaryHeap::with_capacity(count + 1);
 
+        for entry in self.states.iter() {
+            if let CacheState::Ready { block } = entry.value()
+                && block.path().starts_with(cache_dir)
+            {
+                let ts = block.last_accessed();
+
+                if heap.len() < count {
+                    heap.push((ts, entry.key().clone()));
+                } else if let Some(mut top) = heap.peek_mut()
+                    && ts < top.0
+                {
+                    *top = (ts, entry.key().clone());
+                }
+            }
+        }
+
+        let victims: Vec<_> = heap.into_iter().collect();
         if victims.is_empty() {
             return Ok(());
         }
 
-        self.index.upsert(victims.iter().map(|(key, entry)| {
+        self.index.upsert(victims.iter().map(|(_, key)| {
             (
                 key.clone(),
                 BlockEntry {
-                    path: entry.path.clone(),
+                    path: cache_dir.join("purged").to_string_lossy().to_string(),
                     state: BlockState::Purging,
                 },
             )
         }))?;
 
-        victims
-            .into_iter()
-            .filter_map(|(block_key, _)| self.states.remove(&block_key))
-            .filter_map(|(_, state)| match state {
-                CacheState::Ready { block } => Some(block),
-                _ => None,
-            })
-            .for_each(|block| block.delete_on_drop());
+        for (_, key) in victims {
+            if let Some((_, CacheState::Ready { block })) = self.states.remove(&key) {
+                block.delete_on_drop();
+            }
+        }
 
         Ok(())
     }

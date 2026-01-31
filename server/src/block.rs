@@ -1,6 +1,7 @@
 use std::{
     fs::File,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -19,6 +20,7 @@ pub struct Block {
     block_key: BlockKey,
     index: Arc<Index>,
     should_delete_on_drop: AtomicBool,
+    last_accessed: AtomicU64,
 }
 
 impl Block {
@@ -49,6 +51,7 @@ impl Block {
             block_key,
             index,
             should_delete_on_drop: AtomicBool::new(false),
+            last_accessed: AtomicU64::new(Self::now()),
         })
     }
 
@@ -63,6 +66,7 @@ impl Block {
             block_key,
             index,
             should_delete_on_drop: AtomicBool::new(false),
+            last_accessed: AtomicU64::new(Self::now()),
         })
     }
 
@@ -76,6 +80,21 @@ impl Block {
 
     pub fn delete_on_drop(&self) {
         self.should_delete_on_drop.store(true, Ordering::Release);
+    }
+
+    pub fn record_access(&self) {
+        self.last_accessed.store(Self::now(), Ordering::Relaxed);
+    }
+
+    pub fn last_accessed(&self) -> u64 {
+        self.last_accessed.load(Ordering::Relaxed)
+    }
+
+    fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 }
 
