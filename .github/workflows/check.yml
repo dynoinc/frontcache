@@ -37,6 +37,9 @@ jobs:
     - name: Setup Just
       uses: extractions/setup-just@v2
 
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v5
+
     - name: Run just check
       run: just check
 
