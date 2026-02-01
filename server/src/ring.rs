@@ -8,6 +8,7 @@ const VIRTUAL_NODES: usize = 150;
 pub struct ConsistentHashRing {
     ring: BTreeMap<u64, String>,
     nodes: HashSet<String>,
+    hasher: RandomState,
 }
 
 impl ConsistentHashRing {
@@ -15,6 +16,7 @@ impl ConsistentHashRing {
         Self {
             ring: BTreeMap::new(),
             nodes: HashSet::new(),
+            hasher: RandomState::new(),
         }
     }
 
@@ -57,6 +59,6 @@ impl ConsistentHashRing {
     }
 
     fn hash(&self, key: &str) -> u64 {
-        RandomState::new().hash_one(key)
+        self.hasher.hash_one(key)
     }
 }
