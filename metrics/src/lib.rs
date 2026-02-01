@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use opentelemetry::{
     KeyValue,
-    metrics::{Histogram, MeterProvider as _},
+    metrics::{Counter, Gauge, Histogram, MeterProvider as _},
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::{
@@ -21,7 +21,9 @@ pub struct Metrics {
     pub store_read_duration: Histogram<f64>,
     pub store_read_bytes: Histogram<f64>,
     pub cache_get_duration: Histogram<f64>,
-    pub disk_available_bytes: opentelemetry::metrics::Gauge<f64>,
+    pub disk_available_bytes: Gauge<f64>,
+    pub ring_members: Gauge<u64>,
+    pub ring_member_changes: Counter<u64>,
 }
 
 pub fn init(service_name: &'static str) -> SdkMeterProvider {
@@ -65,6 +67,14 @@ pub fn init(service_name: &'static str) -> SdkMeterProvider {
         disk_available_bytes: meter
             .f64_gauge("disk_available_bytes")
             .with_description("Available disk space in bytes")
+            .build(),
+        ring_members: meter
+            .u64_gauge("ring_members")
+            .with_description("Current number of members in the hash ring")
+            .build(),
+        ring_member_changes: meter
+            .u64_counter("ring_member_changes")
+            .with_description("Number of members added or removed from the hash ring")
             .build(),
     };
 
