@@ -12,7 +12,7 @@ use opentelemetry_sdk::{
     runtime,
 };
 use tonic::Code;
-use tower::{Layer, Service};
+use tower::{Layer, Service, ServiceExt};
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
@@ -136,10 +136,10 @@ where
             .unwrap_or("unknown")
             .to_string();
         let start = Instant::now();
-        let mut inner = self.inner.clone();
+        let inner = self.inner.clone();
 
         Box::pin(async move {
-            let result = inner.call(req).await;
+            let result = inner.oneshot(req).await;
 
             let status = match &result {
                 Ok(resp) => resp
