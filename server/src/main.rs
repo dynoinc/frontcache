@@ -30,7 +30,12 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     listen: SocketAddr,
 
-    #[arg(long, value_delimiter = ',', default_value = "/tmp/frontcache")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "/tmp/frontcache",
+        help = "Cache directories (comma-separated for multiple)"
+    )]
     cache_dirs: Vec<PathBuf>,
 
     #[arg(long, default_value = "app=frontcache")]

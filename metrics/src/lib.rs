@@ -47,14 +47,20 @@ pub fn init(service_name: &'static str) -> SdkMeterProvider {
 
     let meter = provider.meter(service_name);
 
+    let latency_buckets = vec![
+        0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+    ];
+
     let metrics = Metrics {
         rpc_duration: meter
             .f64_histogram("rpc_duration_seconds")
             .with_description("RPC request duration in seconds")
+            .with_boundaries(latency_buckets.clone())
             .build(),
         store_read_duration: meter
             .f64_histogram("store_read_duration_seconds")
             .with_description("Upstream store read duration in seconds")
+            .with_boundaries(latency_buckets.clone())
             .build(),
         store_read_bytes: meter
             .f64_histogram("store_read_bytes")
@@ -63,6 +69,7 @@ pub fn init(service_name: &'static str) -> SdkMeterProvider {
         cache_get_duration: meter
             .f64_histogram("cache_get_duration_seconds")
             .with_description("Cache get operation duration in seconds")
+            .with_boundaries(latency_buckets)
             .build(),
         disk_available_bytes: meter
             .f64_gauge("disk_available_bytes")

@@ -140,7 +140,9 @@ impl Store {
             .attributes
             .get(&object_store::Attribute::Metadata(VERSION_HEADER.into()))
             .map(|v| v.to_string())
-            .unwrap_or_else(|| get_result.meta.e_tag.clone().unwrap_or_default());
+            .unwrap_or_else(|| get_result.meta.e_tag.clone().unwrap_or_default())
+            .trim_matches('"')
+            .to_string();
 
         let data = get_result
             .bytes()
