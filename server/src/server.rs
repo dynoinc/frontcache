@@ -66,9 +66,19 @@ impl CacheServer {
         Server::builder()
             .layer(frontcache_metrics::layer())
             .add_service(svc)
-            .serve(addr)
+            .serve_with_shutdown(addr, shutdown_signal())
             .await?;
         Ok(())
+    }
+}
+
+async fn shutdown_signal() {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, starting graceful shutdown"),
+        _ = sigterm.recv() => tracing::info!("Received SIGTERM, starting graceful shutdown"),
     }
 }
 

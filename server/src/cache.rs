@@ -4,9 +4,9 @@ use anyhow::bail;
 use dashmap::{DashMap, mapref::entry::Entry};
 use futures_util::future::{FutureExt, Shared};
 use opentelemetry::KeyValue;
+use short_uuid::ShortUuid;
 use thiserror::Error;
 use tokio::sync::oneshot;
-use uuid::Uuid;
 
 use crate::{
     block::Block,
@@ -100,7 +100,7 @@ impl Cache {
 
         match self.states.entry(key.clone()) {
             Entry::Occupied(entry) => match entry.get() {
-                CacheState::Ready { block, .. } => {
+                CacheState::Ready { block } => {
                     block.record_access();
                     let m = frontcache_metrics::get();
                     m.cache_get_duration.record(
@@ -118,7 +118,7 @@ impl Cache {
                             Ok(block) => Ok(block.clone()),
                             Err(e) => Err(e.clone().into()),
                         },
-                        Err(_) => Err(anyhow::anyhow!("Download task dropped")),
+                        Err(_) => panic!("download task dropped for {object}:{block_offset}"),
                     };
 
                     let m = frontcache_metrics::get();
@@ -137,8 +137,8 @@ impl Cache {
                     result: result.clone(),
                 });
 
-                let uuid = Uuid::new_v4().simple().to_string();
-                let block_filename = format!("{}.blk", &uuid[..16]);
+                let short_id = ShortUuid::generate();
+                let block_filename = format!("{}.blk", short_id);
                 let download_result = self.download_block(&key, &block_filename).await;
                 let shared_result = Arc::new(download_result);
 
@@ -235,11 +235,11 @@ impl Cache {
                 let ts = block.last_accessed();
 
                 if heap.len() < count {
-                    heap.push((ts, entry.key().clone()));
+                    heap.push((ts, entry.key().clone(), block.path().to_path_buf()));
                 } else if let Some(mut top) = heap.peek_mut()
                     && ts < top.0
                 {
-                    *top = (ts, entry.key().clone());
+                    *top = (ts, entry.key().clone(), block.path().to_path_buf());
                 }
             }
         }
@@ -249,17 +249,17 @@ impl Cache {
             return Ok(());
         }
 
-        self.index.upsert(victims.iter().map(|(_, key)| {
+        self.index.upsert(victims.iter().map(|(_, key, path)| {
             (
                 key.clone(),
                 BlockEntry {
-                    path: cache_dir.join("purged").to_string_lossy().to_string(),
+                    path: path.to_string_lossy().to_string(),
                     state: BlockState::Purging,
                 },
             )
         }))?;
 
-        for (_, key) in victims {
+        for (_, key, _) in victims {
             if let Some((_, CacheState::Ready { block })) = self.states.remove(&key) {
                 block.delete_on_drop();
             }

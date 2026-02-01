@@ -19,7 +19,7 @@ dashmap = { workspace = true }
 parking_lot = { workspace = true }
 memmap2 = { workspace = true }
 redb = { workspace = true }
-uuid = { workspace = true }
+short-uuid = { workspace = true }
 thiserror = { workspace = true }
 object_store = { workspace = true }
 kube = { workspace = true }
