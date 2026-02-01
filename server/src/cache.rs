@@ -19,7 +19,7 @@ use crate::{
 pub const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
 
 #[derive(Error, Debug, Clone)]
-pub enum DownloadError {
+pub enum CacheError {
     #[error("Failed to create block file")]
     CreateFile(#[source] Arc<anyhow::Error>),
     #[error("Failed to update index")]
@@ -28,10 +28,10 @@ pub enum DownloadError {
     StoreRead(#[source] Arc<StoreError>),
 }
 
-type DownloadResult = Arc<Result<Arc<Block>, DownloadError>>;
+type DownloadResult = Arc<Result<Arc<Block>, CacheError>>;
 
 enum CacheState {
-    Downloading {
+    Writing {
         result: Shared<oneshot::Receiver<DownloadResult>>,
     },
     Ready {
@@ -63,7 +63,7 @@ impl Cache {
     pub async fn init_from_disk(&self) -> Result<()> {
         for (block_key, entry) in self.index.list_all()? {
             match entry.state {
-                BlockState::Downloading | BlockState::Purging => {
+                BlockState::Writing | BlockState::Purging => {
                     tracing::warn!("Found incomplete operation, cleaning up: {:?}", block_key);
                     let block_path = PathBuf::from(&entry.path);
                     let _ = tokio::fs::remove_file(&block_path).await;
@@ -76,6 +76,7 @@ impl Cache {
                     }
                     let block = Block::from_disk(
                         block_path.clone(),
+                        entry.version.clone(),
                         block_key.clone(),
                         self.index.clone(),
                     )?;
@@ -93,7 +94,7 @@ impl Cache {
         Ok(())
     }
 
-    pub async fn get(&self, object: &str, offset: u64) -> Result<Arc<Block>> {
+    pub async fn get(&self, object: &str, offset: u64) -> Result<Arc<Block>, CacheError> {
         let start = Instant::now();
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let key = (object.to_string(), block_offset);
@@ -109,16 +110,13 @@ impl Cache {
                     );
                     Ok(block.clone())
                 }
-                CacheState::Downloading { result } => {
+                CacheState::Writing { result } => {
                     let result_future = result.clone();
                     drop(entry);
 
                     let outcome = match result_future.await {
-                        Ok(arc_result) => match arc_result.as_ref() {
-                            Ok(block) => Ok(block.clone()),
-                            Err(e) => Err(e.clone().into()),
-                        },
-                        Err(_) => panic!("download task dropped for {object}:{block_offset}"),
+                        Ok(arc_result) => arc_result.as_ref().clone(),
+                        Err(_) => panic!("download task dropped for {key:?}"),
                     };
 
                     let m = frontcache_metrics::get();
@@ -133,7 +131,7 @@ impl Cache {
             Entry::Vacant(entry) => {
                 let (tx, rx) = oneshot::channel();
                 let result = rx.shared();
-                entry.insert(CacheState::Downloading {
+                entry.insert(CacheState::Writing {
                     result: result.clone(),
                 });
 
@@ -164,10 +162,7 @@ impl Cache {
                     &[KeyValue::new("result", "miss")],
                 );
 
-                match shared_result.as_ref() {
-                    Ok(block) => Ok(block.clone()),
-                    Err(e) => Err(e.clone().into()),
-                }
+                shared_result.as_ref().clone()
             }
         }
     }
@@ -176,50 +171,59 @@ impl Cache {
         &self,
         key: &BlockKey,
         block_filename: &str,
-    ) -> Result<Arc<Block>, DownloadError> {
+    ) -> Result<Arc<Block>, CacheError> {
         tracing::info!("Downloading block {key:?}");
 
         let cache_dir = select_disk(&self.disks);
         let block_path = cache_dir.join(block_filename);
+
+        let (object_key, offset) = key;
+        let read_result = match self.store.read_range(object_key, *offset, BLOCK_SIZE).await {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(CacheError::StoreRead(Arc::new(e)));
+            }
+        };
 
         self.index
             .upsert([(
                 key.clone(),
                 BlockEntry {
                     path: block_path.to_string_lossy().to_string(),
-                    state: BlockState::Downloading,
+                    state: BlockState::Writing,
+                    version: read_result.version.clone(),
                 },
             )])
-            .map_err(|e| DownloadError::IndexUpdate(Arc::new(e)))?;
+            .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
 
-        let (object_key, offset) = key;
-        let data = match self.store.read_range(object_key, *offset, BLOCK_SIZE).await {
-            Ok(data) => data,
+        let block = match Block::new(
+            block_path.clone(),
+            read_result.data,
+            read_result.version.clone(),
+            key.clone(),
+            self.index.clone(),
+        )
+        .await
+        {
+            Ok(block) => block,
             Err(e) => {
+                let _ = tokio::fs::remove_file(&block_path).await;
                 let _ = self.index.delete(key);
-                return Err(DownloadError::StoreRead(Arc::new(e)));
+                return Err(CacheError::CreateFile(Arc::new(e)));
             }
         };
-        let block =
-            match Block::new(block_path.clone(), data, key.clone(), self.index.clone()).await {
-                Ok(block) => block,
-                Err(e) => {
-                    let _ = tokio::fs::remove_file(&block_path).await;
-                    let _ = self.index.delete(key);
-                    return Err(DownloadError::CreateFile(Arc::new(e)));
-                }
-            };
 
         if let Err(e) = self.index.upsert([(
             key.clone(),
             BlockEntry {
                 path: block_path.to_string_lossy().to_string(),
                 state: BlockState::Downloaded,
+                version: read_result.version,
             },
         )]) {
             let _ = tokio::fs::remove_file(block.path()).await;
             let _ = self.index.delete(key);
-            return Err(DownloadError::IndexUpdate(Arc::new(e)));
+            return Err(CacheError::IndexUpdate(Arc::new(e)));
         }
 
         Ok(Arc::new(block))
@@ -233,13 +237,19 @@ impl Cache {
                 && block.path().starts_with(cache_dir)
             {
                 let ts = block.last_accessed();
+                let item = (
+                    ts,
+                    entry.key().clone(),
+                    block.path().to_path_buf(),
+                    block.version().to_string(),
+                );
 
                 if heap.len() < count {
-                    heap.push((ts, entry.key().clone(), block.path().to_path_buf()));
+                    heap.push(item);
                 } else if let Some(mut top) = heap.peek_mut()
                     && ts < top.0
                 {
-                    *top = (ts, entry.key().clone(), block.path().to_path_buf());
+                    *top = item;
                 }
             }
         }
@@ -249,17 +259,19 @@ impl Cache {
             return Ok(());
         }
 
-        self.index.upsert(victims.iter().map(|(_, key, path)| {
-            (
-                key.clone(),
-                BlockEntry {
-                    path: path.to_string_lossy().to_string(),
-                    state: BlockState::Purging,
-                },
-            )
-        }))?;
+        self.index
+            .upsert(victims.iter().map(|(_, key, path, version)| {
+                (
+                    key.clone(),
+                    BlockEntry {
+                        path: path.to_string_lossy().to_string(),
+                        state: BlockState::Purging,
+                        version: version.clone(),
+                    },
+                )
+            }))?;
 
-        for (_, key, _) in victims {
+        for (_, key, _, _) in victims {
             if let Some((_, CacheState::Ready { block })) = self.states.remove(&key) {
                 block.delete_on_drop();
             }

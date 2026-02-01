@@ -3,13 +3,15 @@ use std::time::Instant;
 use bytes::Bytes;
 use dashmap::DashMap;
 use object_store::{
-    Error as ObjectStoreError, ObjectStore as ObjStore, ObjectStoreExt, aws::AmazonS3Builder,
-    gcp::GoogleCloudStorageBuilder, local::LocalFileSystem, path::Path as ObjPath,
+    Error as ObjectStoreError, GetOptions, ObjectStore as ObjStore, aws::AmazonS3Builder,
+    gcp::GoogleCloudStorageBuilder, path::Path as ObjPath,
 };
 use opentelemetry::KeyValue;
 use thiserror::Error;
 
 use crate::prelude::*;
+
+const VERSION_HEADER: &str = "x-frontcache-version";
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -17,20 +19,34 @@ pub enum StoreError {
     InvalidKey(String),
     #[error("Unsupported provider: {0}")]
     UnsupportedProvider(String),
-    #[error("Backend error")]
-    Backend(#[from] ObjectStoreError),
+    #[error("Object not found: {0}")]
+    NotFound(String),
+    #[error("Backend error: {0}")]
+    Backend(ObjectStoreError),
+}
+
+impl StoreError {
+    fn from_object_store(e: ObjectStoreError, path: &str) -> Self {
+        match e {
+            ObjectStoreError::NotFound { .. } => StoreError::NotFound(path.to_string()),
+            e => StoreError::Backend(e),
+        }
+    }
+}
+
+pub struct ReadResult {
+    pub data: Bytes,
+    pub version: String,
 }
 
 pub struct Store {
     backends: DashMap<(String, String), Arc<dyn ObjStore>>,
-    local_root: Option<PathBuf>,
 }
 
 impl Store {
-    pub fn new(local_root: Option<PathBuf>) -> Self {
+    pub fn new() -> Self {
         Self {
             backends: DashMap::new(),
-            local_root,
         }
     }
 
@@ -42,10 +58,6 @@ impl Store {
 
         let provider = parts[0];
         let rest = parts[1];
-
-        if provider == "file" {
-            return Ok((provider.to_string(), String::new(), rest.to_string()));
-        }
 
         let slash_pos = rest
             .find('/')
@@ -72,20 +84,16 @@ impl Store {
             "s3" => {
                 let s3 = AmazonS3Builder::from_env()
                     .with_bucket_name(bucket)
-                    .build()?;
+                    .build()
+                    .map_err(StoreError::Backend)?;
                 Arc::new(s3)
             }
             "gs" => {
                 let gcs = GoogleCloudStorageBuilder::from_env()
                     .with_bucket_name(bucket)
-                    .build()?;
+                    .build()
+                    .map_err(StoreError::Backend)?;
                 Arc::new(gcs)
-            }
-            "file" => {
-                let root = self.local_root.as_ref().ok_or_else(|| {
-                    StoreError::UnsupportedProvider("file (--local-root not set)".into())
-                })?;
-                Arc::new(LocalFileSystem::new_with_prefix(root)?)
             }
             _ => return Err(StoreError::UnsupportedProvider(provider.to_string())),
         };
@@ -99,13 +107,17 @@ impl Store {
         key: &str,
         offset: u64,
         length: u64,
-    ) -> Result<Bytes, StoreError> {
+    ) -> Result<ReadResult, StoreError> {
         let start = Instant::now();
         let (provider, bucket, path) = Self::parse_key(key)?;
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
-        let range = offset..(offset + length);
-        let result = backend.get_range(&obj_path, range).await;
+
+        let opts = GetOptions {
+            range: Some((offset..(offset + length)).into()),
+            ..Default::default()
+        };
+        let result = backend.get_opts(&obj_path, opts).await;
 
         let m = frontcache_metrics::get();
         let status = result.as_ref().map(|_| "ok").unwrap_or_else(|e| {
@@ -123,11 +135,21 @@ impl Store {
             ],
         );
 
-        if let Ok(ref bytes) = result {
-            m.store_read_bytes
-                .record(bytes.len() as f64, &[KeyValue::new("provider", provider)]);
-        }
+        let get_result = result.map_err(|e| StoreError::from_object_store(e, key))?;
+        let version = get_result
+            .attributes
+            .get(&object_store::Attribute::Metadata(VERSION_HEADER.into()))
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| get_result.meta.e_tag.clone().unwrap_or_default());
 
-        result.map_err(Into::into)
+        let data = get_result
+            .bytes()
+            .await
+            .map_err(|e| StoreError::from_object_store(e, key))?;
+
+        m.store_read_bytes
+            .record(data.len() as f64, &[KeyValue::new("provider", provider)]);
+
+        Ok(ReadResult { data, version })
     }
 }

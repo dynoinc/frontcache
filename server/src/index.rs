@@ -29,7 +29,7 @@ const BLOCKS_TABLE: TableDefinition<BlockKey, &[u8]> = TableDefinition::new("blo
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockState {
-    Downloading,
+    Writing,
     Downloaded,
     Purging,
 }
@@ -38,6 +38,7 @@ pub enum BlockState {
 pub struct BlockEntry {
     pub path: String,
     pub state: BlockState,
+    pub version: String,
 }
 
 pub struct Index {

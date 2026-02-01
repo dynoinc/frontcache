@@ -20,6 +20,7 @@ message ReadRangeRequest {
   string key = 1;
   uint64 offset = 2;
   uint64 length = 3;
+  string version = 4;  // x-frontcache-version metadata if set, otherwise etag
 }
 
 message ReadRangeResponse {

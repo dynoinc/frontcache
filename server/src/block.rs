@@ -17,6 +17,7 @@ pub struct Block {
     path: PathBuf,
     _file: File,
     mmap: Mmap,
+    version: String,
     block_key: BlockKey,
     index: Arc<Index>,
     should_delete_on_drop: AtomicBool,
@@ -27,6 +28,7 @@ impl Block {
     pub async fn new(
         path: PathBuf,
         data: Bytes,
+        version: String,
         block_key: BlockKey,
         index: Arc<Index>,
     ) -> Result<Self> {
@@ -48,6 +50,7 @@ impl Block {
             path,
             _file: std_file,
             mmap,
+            version,
             block_key,
             index,
             should_delete_on_drop: AtomicBool::new(false),
@@ -55,7 +58,12 @@ impl Block {
         })
     }
 
-    pub fn from_disk(path: PathBuf, block_key: BlockKey, index: Arc<Index>) -> Result<Self> {
+    pub fn from_disk(
+        path: PathBuf,
+        version: String,
+        block_key: BlockKey,
+        index: Arc<Index>,
+    ) -> Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
@@ -63,6 +71,7 @@ impl Block {
             path,
             _file: file,
             mmap,
+            version,
             block_key,
             index,
             should_delete_on_drop: AtomicBool::new(false),
@@ -76,6 +85,10 @@ impl Block {
 
     pub fn data(&self) -> &[u8] {
         &self.mmap[..]
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     pub fn delete_on_drop(&self) {

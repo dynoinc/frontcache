@@ -8,5 +8,8 @@ version = "0.1.0"
 description = "Python bindings for FrontCache distributed cache client"
 requires-python = ">=3.8"
 
+[dependency-groups]
+dev = ["maturin>=1.0,<2.0"]
+
 [tool.maturin]
 module-name = "frontcache"

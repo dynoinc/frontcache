@@ -15,11 +15,12 @@ impl Client {
         key: String,
         offset: u64,
         length: u64,
+        version: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.client.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let data = client
-                .read_range(&key, offset, length)
+                .read_range(&key, offset, length, &version)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             Ok::<PyBytes, PyErr>(PyBytes::new(data))

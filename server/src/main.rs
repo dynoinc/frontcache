@@ -35,9 +35,6 @@ struct Args {
 
     #[arg(long, default_value = "app=frontcache")]
     label: String,
-
-    #[arg(long, help = "Root directory for file:// URLs (testing only)")]
-    local_root: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -52,7 +49,7 @@ async fn main() -> Result<()> {
     }
 
     let index = Arc::new(Index::open(args.cache_dirs[0].join("index.db"))?);
-    let store = Arc::new(Store::new(args.local_root));
+    let store = Arc::new(Store::new());
     let disks = args
         .cache_dirs
         .into_iter()

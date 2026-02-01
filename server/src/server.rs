@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 
-use anyhow::anyhow;
 use frontcache_proto::{
     LookupOwnerRequest, LookupOwnerResponse, ReadRangeRequest, ReadRangeResponse,
     cache_service_server::{CacheService, CacheServiceServer},
@@ -9,9 +8,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
-    cache::{BLOCK_SIZE, Cache},
+    cache::{BLOCK_SIZE, Cache, CacheError},
     prelude::*,
     ring::ConsistentHashRing,
+    store::StoreError,
 };
 
 const CHUNK_SIZE: usize = 256 * 1024;
@@ -32,11 +32,29 @@ impl CacheServer {
         object: &str,
         offset: u64,
         length: u64,
-    ) -> Result<()> {
-        let block = cache
-            .get(object, offset)
-            .await
-            .map_err(|e| anyhow!("Failed to get block: {}", e))?;
+        version: &str,
+    ) -> Result<(), Status> {
+        let block = cache.get(object, offset).await.map_err(|e| {
+            let msg = format!("{:?}", e);
+            match &e {
+                CacheError::StoreRead(store_err) => match store_err.as_ref() {
+                    StoreError::InvalidKey(_) | StoreError::UnsupportedProvider(_) => {
+                        Status::invalid_argument(msg)
+                    }
+                    StoreError::NotFound(_) => Status::not_found(msg),
+                    StoreError::Backend(_) => Status::internal(msg),
+                },
+                _ => Status::internal(msg),
+            }
+        })?;
+
+        if block.version() != version {
+            return Err(Status::failed_precondition(format!(
+                "version mismatch: cached={}, requested={}",
+                block.version(),
+                version
+            )));
+        }
 
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let offset_in_block = (offset - block_offset) as usize;
@@ -53,7 +71,7 @@ impl CacheServer {
 
             tx.send(Ok(ReadRangeResponse { data: chunk }))
                 .await
-                .map_err(|_| anyhow!("Failed to send chunk"))?;
+                .map_err(|_| Status::internal("Failed to send chunk"))?;
 
             chunk_start += chunk_size;
         }
@@ -111,14 +129,17 @@ impl CacheService for CacheServer {
         let object = req.key.clone();
         let offset = req.offset;
         let length = req.length;
+        let version = req.version.clone();
 
         let cache = self.cache.clone();
 
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 
         tokio::spawn(async move {
-            if let Err(e) = Self::stream_data(cache, tx.clone(), &object, offset, length).await {
-                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+            if let Err(e) =
+                Self::stream_data(cache, tx.clone(), &object, offset, length, &version).await
+            {
+                let _ = tx.send(Err(e)).await;
             }
         });
 

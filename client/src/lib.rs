@@ -31,7 +31,13 @@ impl CacheClient {
         })
     }
 
-    pub async fn read_range(&self, key: &str, offset: u64, length: u64) -> Result<Bytes> {
+    pub async fn read_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+        version: &str,
+    ) -> Result<Bytes> {
         let end_offset = offset + length;
         let mut tasks = Vec::new();
         let mut current = offset;
@@ -44,6 +50,7 @@ impl CacheClient {
 
             let self_clone = self.clone();
             let key = key.to_string();
+            let version = version.to_string();
             tasks.push(async move {
                 let mut local = self_clone
                     .get_or_create_connection(&self_clone.local_addr)
@@ -64,6 +71,7 @@ impl CacheClient {
                         key,
                         offset: read_offset,
                         length: read_len,
+                        version,
                     })
                     .await?
                     .into_inner();

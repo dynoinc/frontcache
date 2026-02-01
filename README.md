@@ -21,8 +21,7 @@ Run `just check` to build, test, and verify the project.
 ./target/debug/frontcache-server \
   --listen 0.0.0.0:8080 \
   --cache-dir /data/cache \
-  --label app=frontcache \
-  --local-root /data  # Optional: enable file:// (testing only)
+  --label app=frontcache
 ```
 
 ### Rust Client
@@ -34,7 +33,7 @@ use frontcache_client::CacheClient;
 async fn main() -> Result<()> {
     let client = CacheClient::new(8080).await?;
 
-    let data = client.read_range("s3://bucket/file", 0, 1024 * 1024).await?;
+    let data = client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1").await?;
     println!("Read {} bytes", data.len());
     Ok(())
 }
@@ -49,7 +48,7 @@ import frontcache
 async def main():
     client = await frontcache.connect(8080)
 
-    data = await client.read_range("file://datasets/model.bin", 0, 1024 * 1024)
+    data = await client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1")
     print(f"Read {len(data)} bytes")
 
 asyncio.run(main())
