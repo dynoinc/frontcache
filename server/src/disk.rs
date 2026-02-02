@@ -7,6 +7,9 @@ use crate::{
     prelude::*,
 };
 
+const PURGE_INTERVAL: Duration = Duration::from_secs(10);
+const MIN_FREE_PERCENT: u64 = 5;
+
 #[derive(Copy, Clone)]
 pub struct DiskStats {
     pub available: u64,
@@ -69,13 +72,13 @@ pub fn get_disk_stats(path: &Path) -> Result<DiskStats> {
 pub fn start_purger(cache: Arc<Cache>) {
     tokio::spawn(async move {
         loop {
-            sleep(Duration::from_secs(10)).await;
+            sleep(PURGE_INTERVAL).await;
 
             for disk in cache.disks() {
                 let stats = disk.update_stats().await;
                 let blocks_to_purge = stats
                     .map(|s| {
-                        let min_free = (s.total * 5) / 100;
+                        let min_free = (s.total * MIN_FREE_PERCENT) / 100;
                         let space_to_free = min_free.saturating_sub(s.available);
                         space_to_free.div_ceil(BLOCK_SIZE) as usize
                     })

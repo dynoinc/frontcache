@@ -1,10 +1,11 @@
 use std::net::SocketAddr;
+use std::pin::Pin;
 
 use frontcache_proto::{
     LookupOwnerRequest, LookupOwnerResponse, ReadRangeRequest, ReadRangeResponse,
     cache_service_server::{CacheService, CacheServiceServer},
 };
-use tokio_stream::wrappers::ReceiverStream;
+use futures_util::Stream;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
@@ -24,59 +25,6 @@ pub struct CacheServer {
 impl CacheServer {
     pub fn new(cache: Arc<Cache>, ring: Arc<RwLock<ConsistentHashRing>>) -> Self {
         Self { cache, ring }
-    }
-
-    async fn stream_data(
-        cache: Arc<Cache>,
-        tx: tokio::sync::mpsc::Sender<Result<ReadRangeResponse, Status>>,
-        object: &str,
-        offset: u64,
-        length: u64,
-        version: &str,
-    ) -> Result<(), Status> {
-        let block = cache.get(object, offset).await.map_err(|e| {
-            let msg = format!("{:?}", e);
-            match &e {
-                CacheError::StoreRead(store_err) => match store_err.as_ref() {
-                    StoreError::InvalidKey(_) | StoreError::UnsupportedProvider(_) => {
-                        Status::invalid_argument(msg)
-                    }
-                    StoreError::NotFound(_) => Status::not_found(msg),
-                    StoreError::Backend(_) => Status::internal(msg),
-                },
-                _ => Status::internal(msg),
-            }
-        })?;
-
-        if block.version() != version {
-            return Err(Status::failed_precondition(format!(
-                "version mismatch: cached={}, requested={}",
-                block.version(),
-                version
-            )));
-        }
-
-        let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
-        let offset_in_block = (offset - block_offset) as usize;
-        let to_read = length as usize;
-
-        let block_data = block.data();
-        let mut chunk_start = offset_in_block;
-        let chunk_end = offset_in_block + to_read;
-
-        while chunk_start < chunk_end {
-            let chunk_size = CHUNK_SIZE.min(chunk_end - chunk_start);
-            let chunk =
-                bytes::Bytes::copy_from_slice(&block_data[chunk_start..chunk_start + chunk_size]);
-
-            tx.send(Ok(ReadRangeResponse { data: chunk }))
-                .await
-                .map_err(|_| Status::internal("Failed to send chunk"))?;
-
-            chunk_start += chunk_size;
-        }
-
-        Ok(())
     }
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
@@ -119,30 +67,59 @@ impl CacheService for CacheServer {
         }))
     }
 
-    type ReadRangeStream = ReceiverStream<Result<ReadRangeResponse, Status>>;
+    type ReadRangeStream = Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>>;
 
     async fn read_range(
         &self,
         request: Request<ReadRangeRequest>,
     ) -> Result<Response<Self::ReadRangeStream>, Status> {
         let req = request.get_ref();
-        let object = req.key.clone();
         let offset = req.offset;
         let length = req.length;
-        let version = req.version.clone();
 
-        let cache = self.cache.clone();
-
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
-
-        tokio::spawn(async move {
-            if let Err(e) =
-                Self::stream_data(cache, tx.clone(), &object, offset, length, &version).await
-            {
-                let _ = tx.send(Err(e)).await;
+        let block = self.cache.get(&req.key, offset).await.map_err(|e| {
+            let msg = format!("{:?}", e);
+            match &e {
+                CacheError::StoreRead(store_err) => match store_err.as_ref() {
+                    StoreError::InvalidKey(_) | StoreError::UnsupportedProvider(_) => {
+                        Status::invalid_argument(msg)
+                    }
+                    StoreError::NotFound(_) => Status::not_found(msg),
+                    StoreError::Backend(_) => Status::internal(msg),
+                },
+                _ => Status::internal(msg),
             }
-        });
+        })?;
 
-        Ok(Response::new(ReceiverStream::new(rx)))
+        if block.version() != req.version {
+            return Err(Status::failed_precondition(format!(
+                "version mismatch: cached={}, requested={}",
+                block.version(),
+                req.version
+            )));
+        }
+
+        let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
+        let offset_in_block = (offset - block_offset) as usize;
+        let chunk_end = offset_in_block + length as usize;
+
+        let stream = futures_util::stream::unfold(
+            (block, offset_in_block),
+            move |(block, chunk_start)| async move {
+                if chunk_start >= chunk_end {
+                    return None;
+                }
+                let chunk_size = CHUNK_SIZE.min(chunk_end - chunk_start);
+                let chunk = bytes::Bytes::copy_from_slice(
+                    &block.data()[chunk_start..chunk_start + chunk_size],
+                );
+                Some((
+                    Ok(ReadRangeResponse { data: chunk }),
+                    (block, chunk_start + chunk_size),
+                ))
+            },
+        );
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }

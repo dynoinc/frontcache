@@ -36,7 +36,7 @@ pub fn init(service_name: &'static str) -> SdkMeterProvider {
             .expect("Failed to create OTLP exporter");
 
         let reader = PeriodicReader::builder(exporter, runtime::Tokio)
-            .with_interval(std::time::Duration::from_secs(60))
+            .with_interval(std::time::Duration::from_secs(10))
             .build();
 
         SdkMeterProvider::builder().with_reader(reader).build()
