@@ -19,7 +19,7 @@ tokio = { version = "1.41", features = ["full"] }
 tonic = "0.12"
 prost = "0.13"
 anyhow = "1.0"
-bytes = "1.8"
+bytes = "1.11"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap = "6.1"
