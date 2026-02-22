@@ -2,8 +2,7 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use frontcache_proto::{
-    LookupOwnerRequest, ReadRangeRequest,
-    cache_service_client::CacheServiceClient,
+    LookupOwnerRequest, ReadRangeRequest, cache_service_client::CacheServiceClient,
     router_service_client::RouterServiceClient,
 };
 use futures::future::try_join_all;
