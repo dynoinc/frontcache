@@ -105,7 +105,6 @@ pub fn get() -> &'static Metrics {
     METRICS.get().expect("Metrics not initialized")
 }
 
-
 #[derive(Clone)]
 pub struct RpcMetricsLayer;
 

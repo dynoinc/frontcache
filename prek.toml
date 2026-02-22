@@ -1,0 +1,5 @@
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "just", name = "just", entry = "just", language = "system", pass_filenames = false, always_run = true },
+]
