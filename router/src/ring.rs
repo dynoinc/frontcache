@@ -1,6 +1,6 @@
 use std::{
-    collections::{BTreeMap, HashSet, hash_map::RandomState},
-    hash::BuildHasher,
+    collections::{BTreeMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
 };
 
 const VIRTUAL_NODES: usize = 150;
@@ -8,7 +8,6 @@ const VIRTUAL_NODES: usize = 150;
 pub struct ConsistentHashRing {
     ring: BTreeMap<u64, String>,
     nodes: HashSet<String>,
-    hasher: RandomState,
 }
 
 impl ConsistentHashRing {
@@ -16,7 +15,6 @@ impl ConsistentHashRing {
         Self {
             ring: BTreeMap::new(),
             nodes: HashSet::new(),
-            hasher: RandomState::new(),
         }
     }
 
@@ -59,6 +57,8 @@ impl ConsistentHashRing {
     }
 
     fn hash(&self, key: &str) -> u64 {
-        self.hasher.hash_one(key)
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 }

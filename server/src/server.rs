@@ -83,7 +83,16 @@ impl CacheService for CacheServer {
 
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let offset_in_block = (offset - block_offset) as usize;
-        let chunk_end = offset_in_block + length as usize;
+        let block_len = block.data().len();
+
+        if offset_in_block >= block_len {
+            return Err(Status::out_of_range(format!(
+                "offset {} beyond block size {}",
+                offset_in_block, block_len
+            )));
+        }
+
+        let chunk_end = block_len.min(offset_in_block + length as usize);
 
         let stream = futures_util::stream::unfold(
             (block, offset_in_block),
