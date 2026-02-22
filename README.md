@@ -61,12 +61,20 @@ rules:
 
 ```rust
 use frontcache_client::CacheClient;
+use futures::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let client = CacheClient::new("router:8081".to_string()).await?;
 
-    let data = client.read_range("s3://bucket/file", 0, 1024 * 1024, Some("v1")).await?;
+    // Buffer full response in memory by collecting stream chunks.
+    let length = 1024 * 1024;
+    let mut stream = client.stream_range("s3://bucket/file", 0, length, Some("v1"))?;
+    let mut data = Vec::with_capacity(length as usize);
+    while let Some(chunk) = stream.next().await {
+        data.extend_from_slice(&chunk?);
+    }
+
     println!("Read {} bytes", data.len());
     Ok(())
 }
@@ -81,8 +89,10 @@ import frontcache
 async def main():
     client = await frontcache.connect("router:8081")
 
-    data = await client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1")  # or omit version for immutable objects
-    print(f"Read {len(data)} bytes")
+    # Stream directly to disk.
+    with open("download.bin", "wb") as f:
+        async for chunk in client.stream_range("s3://bucket/file", 0, 1024 * 1024, "v1"):
+            f.write(chunk)
 
 asyncio.run(main())
 ```

@@ -1,11 +1,12 @@
 use anyhow::Result;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use dashmap::DashMap;
 use frontcache_proto::{
     LookupOwnerRequest, ReadRangeRequest, cache_service_client::CacheServiceClient,
     router_service_client::RouterServiceClient,
 };
-use futures::future::try_join_all;
+use futures::{Stream, StreamExt, TryStreamExt};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,8 +15,10 @@ use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
 const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
+const PREFETCH_BLOCKS: usize = 16;
 
 type MetricsChannel = frontcache_metrics::RpcMetricsService<Channel>;
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
 
 struct ClientConfig {
     lookup_timeout: Duration,
@@ -82,15 +85,21 @@ impl CacheClient {
         })
     }
 
-    pub async fn read_range(
+    pub fn stream_range(
         &self,
         key: &str,
         offset: u64,
         length: u64,
         version: Option<&str>,
-    ) -> Result<Bytes> {
-        let end_offset = offset + length;
-        let mut tasks = Vec::new();
+    ) -> Result<ByteStream> {
+        let end_offset = offset
+            .checked_add(length)
+            .ok_or_else(|| anyhow::anyhow!("offset + length overflows u64"))?;
+        if length == 0 {
+            return Ok(Box::pin(futures::stream::empty()));
+        }
+
+        let mut block_reads = Vec::new();
         let mut current = offset;
 
         while current < end_offset {
@@ -98,72 +107,89 @@ impl CacheClient {
             let read_end = end_offset.min(block_offset + BLOCK_SIZE);
             let (read_offset, read_len) = (current, read_end - current);
             current = read_end;
-
-            let self_clone = self.clone();
-            let key = key.to_string();
-            let version = version.map(|v| v.to_string());
-            tasks.push(async move {
-                let owner = self_clone.lookup_owner(&key, block_offset).await?;
-                let client = self_clone.get_or_create_cache_connection(&owner).await?;
-
-                let strategy = ExponentialBackoff::from_millis(100)
-                    .factor(2)
-                    .max_delay(Duration::from_secs(1))
-                    .take(self_clone.config.max_retries);
-
-                let chunks = Retry::spawn(strategy, || {
-                    let mut client = client.clone();
-                    let key = key.clone();
-                    let version = version.clone();
-                    async move {
-                        let mut stream = client
-                            .read_range(ReadRangeRequest {
-                                key,
-                                offset: read_offset,
-                                length: read_len,
-                                version,
-                            })
-                            .await
-                            .map_err(|s| {
-                                if is_retryable(s.code()) {
-                                    RetryError::transient(anyhow::Error::from(s))
-                                } else {
-                                    RetryError::permanent(anyhow::Error::from(s))
-                                }
-                            })?
-                            .into_inner();
-
-                        let mut chunks = Vec::new();
-                        while let Some(resp) = stream.message().await.map_err(|s| {
-                            if is_retryable(s.code()) {
-                                RetryError::transient(anyhow::Error::from(s))
-                            } else {
-                                RetryError::permanent(anyhow::Error::from(s))
-                            }
-                        })? {
-                            chunks.push(resp.data);
-                        }
-
-                        Ok::<_, RetryError<anyhow::Error>>(chunks)
-                    }
-                })
-                .await?;
-
-                Ok::<_, anyhow::Error>(chunks)
-            });
+            block_reads.push((block_offset, read_offset, read_len));
         }
 
-        let chunks: Vec<Bytes> = try_join_all(tasks).await?.into_iter().flatten().collect();
-        match chunks.as_slice() {
-            [single] => Ok(single.clone()),
-            _ => {
-                let mut buf = BytesMut::with_capacity(length as usize);
-                for chunk in chunks {
-                    buf.extend_from_slice(&chunk);
+        let client = self.clone();
+        let key = key.to_string();
+        let version = version.map(|v| v.to_string());
+
+        let stream = futures::stream::iter(block_reads.into_iter().map(
+            move |(block_offset, read_offset, read_len)| {
+                let client = client.clone();
+                let key = key.clone();
+                let version = version.clone();
+                async move {
+                    client
+                        .read_block_stream_with_retry(
+                            key,
+                            block_offset,
+                            read_offset,
+                            read_len,
+                            version,
+                        )
+                        .await
                 }
-                Ok(buf.freeze())
+            },
+        ))
+        .buffered(PREFETCH_BLOCKS)
+        .try_flatten();
+
+        Ok(Box::pin(stream))
+    }
+
+    async fn read_block_stream_with_retry(
+        &self,
+        key: String,
+        block_offset: u64,
+        read_offset: u64,
+        read_len: u64,
+        version: Option<String>,
+    ) -> Result<ByteStream> {
+        let owner = self.lookup_owner(&key, block_offset).await?;
+        let client = self.get_or_create_cache_connection(&owner).await?;
+
+        let strategy = ExponentialBackoff::from_millis(100)
+            .factor(2)
+            .max_delay(Duration::from_secs(1))
+            .take(self.config.max_retries);
+
+        let response = Retry::spawn(strategy, || {
+            let mut client = client.clone();
+            let key = key.clone();
+            let version = version.clone();
+            async move {
+                let stream = client
+                    .read_range(ReadRangeRequest {
+                        key,
+                        offset: read_offset,
+                        length: read_len,
+                        version,
+                    })
+                    .await
+                    .map_err(|s| {
+                        if is_retryable(s.code()) {
+                            RetryError::transient(anyhow::Error::from(s))
+                        } else {
+                            RetryError::permanent(anyhow::Error::from(s))
+                        }
+                    })?
+                    .into_inner();
+                Ok::<_, RetryError<anyhow::Error>>(stream)
             }
-        }
+        })
+        .await?;
+
+        let chunk_stream = futures::stream::try_unfold(response, |mut stream| async move {
+            match stream.message().await {
+                Ok(Some(resp)) => Ok(Some((resp.data, stream))),
+                Ok(None) => Ok(None),
+                Err(status) => Err(anyhow::Error::from(status)),
+            }
+        })
+        .try_filter(|bytes| futures::future::ready(!bytes.is_empty()));
+
+        Ok(Box::pin(chunk_stream))
     }
 
     async fn lookup_owner(&self, key: &str, block_offset: u64) -> Result<String> {
@@ -204,10 +230,19 @@ impl CacheClient {
             return Ok(client.clone());
         }
 
-        let channel = Channel::from_shared(format!("http://{}", addr))?
-            .timeout(self.config.read_timeout)
-            .connect()
-            .await?;
+        let endpoint =
+            Channel::from_shared(format!("http://{}", addr))?.timeout(self.config.read_timeout);
+
+        let strategy = ExponentialBackoff::from_millis(100)
+            .factor(2)
+            .max_delay(Duration::from_secs(1))
+            .take(self.config.max_retries);
+
+        let channel = Retry::spawn(strategy, || {
+            let endpoint = endpoint.clone();
+            async move { endpoint.connect().await.map_err(RetryError::transient) }
+        })
+        .await?;
 
         let channel = ServiceBuilder::new()
             .layer(frontcache_metrics::layer())

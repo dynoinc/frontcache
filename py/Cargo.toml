@@ -12,3 +12,5 @@ frontcache-client = { path = "../client" }
 pyo3 = { workspace = true }
 pyo3-async-runtimes = { workspace = true }
 pyo3-bytes = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }

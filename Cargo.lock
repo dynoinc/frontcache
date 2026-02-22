@@ -644,9 +644,11 @@ name = "frontcache-py"
 version = "0.1.0"
 dependencies = [
  "frontcache-client",
+ "futures",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-bytes",
+ "tokio",
 ]
 
 [[package]]
