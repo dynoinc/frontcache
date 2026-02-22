@@ -13,4 +13,5 @@ dashmap = { workspace = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+tokio-retry2 = { workspace = true }
 tower = { workspace = true }

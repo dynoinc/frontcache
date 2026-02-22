@@ -595,6 +595,7 @@ dependencies = [
  "futures",
  "opentelemetry",
  "opentelemetry_sdk",
+ "tokio-retry2",
  "tonic",
  "tower 0.5.3",
 ]
@@ -2781,6 +2782,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-retry2"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a0a122635e32bd827df297f311ca5e0292636bbd82f67ff84a4bedeab06dbeb"
+dependencies = [
+ "pin-project",
+ "tokio",
 ]
 
 [[package]]

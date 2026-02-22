@@ -7,7 +7,10 @@ use frontcache_proto::{
     router_service_client::RouterServiceClient,
 };
 use futures::future::try_join_all;
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio_retry2::{Retry, RetryError, strategy::ExponentialBackoff};
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
@@ -15,18 +18,58 @@ const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
 
 type MetricsChannel = frontcache_metrics::RpcMetricsService<Channel>;
 
+struct ClientConfig {
+    lookup_timeout: Duration,
+    read_timeout: Duration,
+    max_retries: usize,
+}
+
+fn env_or<T: FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+impl ClientConfig {
+    fn from_env() -> Self {
+        Self {
+            lookup_timeout: Duration::from_millis(env_or("FRONTCACHE_LOOKUP_TIMEOUT_MS", 500)),
+            read_timeout: Duration::from_millis(env_or("FRONTCACHE_READ_TIMEOUT_MS", 5000)),
+            max_retries: env_or("FRONTCACHE_MAX_RETRIES", 3),
+        }
+    }
+}
+
+fn is_retryable(code: tonic::Code) -> bool {
+    !matches!(
+        code,
+        tonic::Code::InvalidArgument
+            | tonic::Code::NotFound
+            | tonic::Code::AlreadyExists
+            | tonic::Code::PermissionDenied
+            | tonic::Code::Unauthenticated
+            | tonic::Code::Unimplemented
+            | tonic::Code::OutOfRange
+            | tonic::Code::FailedPrecondition
+    )
+}
+
 #[derive(Clone)]
 pub struct CacheClient {
     router: RouterServiceClient<MetricsChannel>,
     connections: DashMap<String, CacheServiceClient<MetricsChannel>>,
+    config: Arc<ClientConfig>,
     _provider: Arc<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl CacheClient {
     pub async fn new(router_addr: String) -> Result<Self> {
+        let config = ClientConfig::from_env();
         let provider = frontcache_metrics::init("frontcache_client");
 
         let channel = Channel::from_shared(format!("http://{}", router_addr))?
+            .timeout(config.lookup_timeout)
             .connect()
             .await?;
         let channel = ServiceBuilder::new()
@@ -37,6 +80,7 @@ impl CacheClient {
         Ok(Self {
             router,
             connections: DashMap::new(),
+            config: Arc::new(config),
             _provider: Arc::new(provider),
         })
     }
@@ -62,30 +106,51 @@ impl CacheClient {
             let key = key.to_string();
             let version = version.to_string();
             tasks.push(async move {
-                let owner = self_clone.router.clone()
-                    .lookup_owner(LookupOwnerRequest {
-                        key: key.clone(),
-                        offset: block_offset,
-                    })
-                    .await?
-                    .into_inner()
-                    .addr;
+                let owner = self_clone.lookup_owner(&key, block_offset).await?;
+                let client = self_clone.get_or_create_cache_connection(&owner).await?;
 
-                let mut client = self_clone.get_or_create_cache_connection(&owner).await?;
-                let mut stream = client
-                    .read_range(ReadRangeRequest {
-                        key,
-                        offset: read_offset,
-                        length: read_len,
-                        version,
-                    })
-                    .await?
-                    .into_inner();
+                let strategy = ExponentialBackoff::from_millis(100)
+                    .factor(2)
+                    .max_delay(Duration::from_secs(1))
+                    .take(self_clone.config.max_retries);
 
-                let mut chunks = Vec::new();
-                while let Some(resp) = stream.message().await? {
-                    chunks.push(resp.data);
-                }
+                let chunks = Retry::spawn(strategy, || {
+                    let mut client = client.clone();
+                    let key = key.clone();
+                    let version = version.clone();
+                    async move {
+                        let mut stream = client
+                            .read_range(ReadRangeRequest {
+                                key,
+                                offset: read_offset,
+                                length: read_len,
+                                version,
+                            })
+                            .await
+                            .map_err(|s| {
+                                if is_retryable(s.code()) {
+                                    RetryError::transient(anyhow::Error::from(s))
+                                } else {
+                                    RetryError::permanent(anyhow::Error::from(s))
+                                }
+                            })?
+                            .into_inner();
+
+                        let mut chunks = Vec::new();
+                        while let Some(resp) = stream.message().await.map_err(|s| {
+                            if is_retryable(s.code()) {
+                                RetryError::transient(anyhow::Error::from(s))
+                            } else {
+                                RetryError::permanent(anyhow::Error::from(s))
+                            }
+                        })? {
+                            chunks.push(resp.data);
+                        }
+
+                        Ok::<_, RetryError<anyhow::Error>>(chunks)
+                    }
+                })
+                .await?;
 
                 Ok::<_, anyhow::Error>(chunks)
             });
@@ -104,6 +169,36 @@ impl CacheClient {
         }
     }
 
+    async fn lookup_owner(&self, key: &str, block_offset: u64) -> Result<String> {
+        let strategy = ExponentialBackoff::from_millis(100)
+            .factor(2)
+            .max_delay(Duration::from_secs(1))
+            .take(self.config.max_retries);
+
+        let router = self.router.clone();
+        let req = LookupOwnerRequest {
+            key: key.to_string(),
+            offset: block_offset,
+        };
+
+        let resp = Retry::spawn(strategy, || {
+            let mut router = router.clone();
+            let req = req.clone();
+            async move {
+                router.lookup_owner(req).await.map_err(|s| {
+                    if is_retryable(s.code()) {
+                        RetryError::transient(s)
+                    } else {
+                        RetryError::permanent(s)
+                    }
+                })
+            }
+        })
+        .await?;
+
+        Ok(resp.into_inner().addr)
+    }
+
     async fn get_or_create_cache_connection(
         &self,
         addr: &str,
@@ -113,6 +208,7 @@ impl CacheClient {
         }
 
         let channel = Channel::from_shared(format!("http://{}", addr))?
+            .timeout(self.config.read_timeout)
             .connect()
             .await?;
 
