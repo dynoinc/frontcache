@@ -5,7 +5,10 @@ use futures_util::stream::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
     Api, Client,
-    runtime::watcher::{Config, Event, watcher},
+    runtime::{
+        WatchStreamExt,
+        watcher::{Config, Event, watcher},
+    },
 };
 
 use crate::ring::Straw2Router;
@@ -35,7 +38,7 @@ impl K8sMembership {
     pub async fn watch_pods(self, ring: Arc<Straw2Router>) -> Result<()> {
         let api: Api<Pod> = Api::namespaced(self.client, &self.namespace);
         let config = Config::default().labels(&self.label_selector);
-        let mut watcher = std::pin::pin!(watcher(api, config));
+        let mut watcher = std::pin::pin!(watcher(api, config).default_backoff());
         let mut init_buf: Option<Vec<String>> = None;
 
         loop {
