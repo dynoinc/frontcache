@@ -26,7 +26,7 @@ kube = { workspace = true }
 k8s-openapi = { workspace = true }
 clap = { workspace = true }
 nix = { workspace = true }
-mimalloc = { workspace = true }
+tikv-jemallocator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 opentelemetry = { workspace = true }

@@ -25,7 +25,7 @@ Distributed pull-through cache for object storage (S3/GCS) written in < 2000 lin
 | Variable | Description |
 |----------|-------------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for metrics (e.g., `http://otel-collector:4317`). If unset, metrics are disabled. |
-| `OTEL_SERVICE_NAME` | Service name for metrics. Defaults to `unknown_service` if not set. |
+| `OTEL_SERVICE_NAME` | Service name resource attribute. The metrics instrumentation scope defaults to `frontcache_server` (server) and `frontcache_client` (client). |
 
 ### Cache Purger
 

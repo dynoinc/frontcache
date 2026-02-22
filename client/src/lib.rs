@@ -22,7 +22,7 @@ pub struct CacheClient {
 
 impl CacheClient {
     pub async fn new(port: u16) -> Result<Self> {
-        let provider = frontcache_metrics::init("frontcache-client");
+        let provider = frontcache_metrics::init("frontcache_client");
         let local_addr = format!("localhost:{}", port);
         Ok(Self {
             local_addr,

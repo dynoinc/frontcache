@@ -9,7 +9,7 @@ mod server;
 mod store;
 
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::net::SocketAddr;
 
@@ -45,7 +45,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let meter_provider = frontcache_metrics::init("frontcache-server");
+    let meter_provider = frontcache_metrics::init("frontcache_server");
 
     let args = Args::parse();
 
