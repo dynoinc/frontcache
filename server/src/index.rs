@@ -39,6 +39,7 @@ pub struct BlockEntry {
     pub path: String,
     pub state: BlockState,
     pub version: String,
+    pub last_accessed: u64,
 }
 
 pub struct Index {

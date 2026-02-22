@@ -80,7 +80,8 @@ impl Cache {
                     if !block_path.exists() {
                         bail!("Block {:?} in index is missing from disk", block_key);
                     }
-                    let block = Block::from_disk(block_path, entry.version.clone())?;
+                    let block =
+                        Block::from_disk(block_path, entry.version.clone(), entry.last_accessed)?;
                     self.states.insert(
                         block_key,
                         CacheState::Ready {
@@ -197,6 +198,7 @@ impl Cache {
                     path: block_path.to_string_lossy().to_string(),
                     state: BlockState::Writing,
                     version: read_result.version.clone(),
+                    last_accessed: 0,
                 },
             )])
             .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
@@ -222,6 +224,7 @@ impl Cache {
                 path: block_path.to_string_lossy().to_string(),
                 state: BlockState::Downloaded,
                 version: read_result.version,
+                last_accessed: block.last_accessed(),
             },
         )]) {
             let _ = tokio::fs::remove_file(block.path()).await;
@@ -263,13 +266,14 @@ impl Cache {
         }
 
         self.index
-            .upsert(victims.iter().map(|(_, key, path, version)| {
+            .upsert(victims.iter().map(|(ts, key, path, version)| {
                 (
                     key.clone(),
                     BlockEntry {
                         path: path.to_string_lossy().to_string(),
                         state: BlockState::Purging,
                         version: version.clone(),
+                        last_accessed: *ts,
                     },
                 )
             }))?;

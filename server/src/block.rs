@@ -42,7 +42,7 @@ impl Block {
         })
     }
 
-    pub fn from_disk(path: PathBuf, version: String) -> Result<Self> {
+    pub fn from_disk(path: PathBuf, version: String, last_accessed: u64) -> Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
@@ -50,7 +50,7 @@ impl Block {
             path,
             mmap,
             version,
-            last_accessed: AtomicU64::new(Self::now()),
+            last_accessed: AtomicU64::new(last_accessed),
         })
     }
 
