@@ -1,5 +1,5 @@
 [package]
-name = "frontcache-server"
+name = "frontcache-router"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,24 +7,14 @@ edition = "2024"
 frontcache-proto = { path = "../proto" }
 frontcache-metrics = { path = "../metrics" }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
 tonic = { workspace = true }
-futures-util = { workspace = true }
-prost = { workspace = true }
 anyhow = { workspace = true }
-bytes = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-dashmap = { workspace = true }
 parking_lot = { workspace = true }
-memmap2 = { workspace = true }
-redb = { workspace = true }
-short-uuid = { workspace = true }
-thiserror = { workspace = true }
-object_store = { workspace = true }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
 clap = { workspace = true }
-nix = { workspace = true }
 tikv-jemallocator = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 opentelemetry = { workspace = true }
+futures-util = { workspace = true }

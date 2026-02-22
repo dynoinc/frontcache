@@ -632,6 +632,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "frontcache-router"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "frontcache-metrics",
+ "frontcache-proto",
+ "futures-util",
+ "k8s-openapi",
+ "kube",
+ "opentelemetry",
+ "parking_lot",
+ "tikv-jemallocator",
+ "tokio",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "frontcache-server"
 version = "0.1.0"
 dependencies = [
@@ -642,8 +662,6 @@ dependencies = [
  "frontcache-metrics",
  "frontcache-proto",
  "futures-util",
- "k8s-openapi",
- "kube",
  "memmap2",
  "nix",
  "object_store",

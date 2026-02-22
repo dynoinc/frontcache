@@ -2,8 +2,11 @@ syntax = "proto3";
 
 package cache;
 
-service CacheService {
+service RouterService {
   rpc LookupOwner(LookupOwnerRequest) returns (LookupOwnerResponse);
+}
+
+service CacheService {
   rpc ReadRange(ReadRangeRequest) returns (stream ReadRangeResponse);
 }
 

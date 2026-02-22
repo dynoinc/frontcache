@@ -4,6 +4,7 @@ members = [
     "metrics",
     "client",
     "server",
+    "router",
     "py",
 ]
 default-members = [
@@ -11,6 +12,7 @@ default-members = [
     "metrics",
     "client",
     "server",
+    "router",
 ]
 resolver = "2"
 

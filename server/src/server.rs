@@ -1,8 +1,10 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 
+use anyhow::Result;
 use frontcache_proto::{
-    LookupOwnerRequest, LookupOwnerResponse, ReadRangeRequest, ReadRangeResponse,
+    ReadRangeRequest, ReadRangeResponse,
     cache_service_server::{CacheService, CacheServiceServer},
 };
 use futures_util::Stream;
@@ -10,8 +12,6 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
     cache::{BLOCK_SIZE, Cache, CacheError},
-    prelude::*,
-    ring::ConsistentHashRing,
     store::StoreError,
 };
 
@@ -19,12 +19,11 @@ const CHUNK_SIZE: usize = 256 * 1024;
 
 pub struct CacheServer {
     cache: Arc<Cache>,
-    ring: Arc<RwLock<ConsistentHashRing>>,
 }
 
 impl CacheServer {
-    pub fn new(cache: Arc<Cache>, ring: Arc<RwLock<ConsistentHashRing>>) -> Self {
-        Self { cache, ring }
+    pub fn new(cache: Arc<Cache>) -> Self {
+        Self { cache }
     }
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
@@ -50,23 +49,6 @@ async fn shutdown_signal() {
 
 #[tonic::async_trait]
 impl CacheService for CacheServer {
-    async fn lookup_owner(
-        &self,
-        request: Request<LookupOwnerRequest>,
-    ) -> Result<Response<LookupOwnerResponse>, Status> {
-        let req = request.get_ref();
-        let block_offset = (req.offset / BLOCK_SIZE) * BLOCK_SIZE;
-
-        let ring = self.ring.read();
-        let owner = ring
-            .get_owner(&req.key, block_offset)
-            .ok_or_else(|| Status::unavailable("no nodes available"))?;
-
-        Ok(Response::new(LookupOwnerResponse {
-            addr: owner.clone(),
-        }))
-    }
-
     type ReadRangeStream = Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>>;
 
     async fn read_range(

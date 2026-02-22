@@ -1,11 +1,15 @@
+use std::sync::Arc;
+
+use anyhow::Result;
 use futures_util::stream::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
     Api, Client,
     runtime::watcher::{Config, Event, watcher},
 };
+use parking_lot::RwLock;
 
-use crate::{prelude::*, ring::ConsistentHashRing};
+use crate::ring::ConsistentHashRing;
 
 pub struct K8sMembership {
     client: Client,

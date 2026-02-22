@@ -29,9 +29,9 @@ impl Client {
 }
 
 #[pyfunction]
-fn connect<'py>(py: Python<'py>, port: u16) -> PyResult<Bound<'py, PyAny>> {
+fn connect<'py>(py: Python<'py>, router_addr: String) -> PyResult<Bound<'py, PyAny>> {
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let cache_client = CacheClient::new(port)
+        let cache_client = CacheClient::new(router_addr)
             .await
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok::<Client, PyErr>(Client {

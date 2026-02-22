@@ -9,7 +9,7 @@ use object_store::{
 use opentelemetry::KeyValue;
 use thiserror::Error;
 
-use crate::prelude::*;
+use std::sync::Arc;
 
 const VERSION_HEADER: &str = "x-frontcache-version";
 

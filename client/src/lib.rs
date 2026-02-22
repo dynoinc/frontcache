@@ -2,7 +2,9 @@ use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use frontcache_proto::{
-    LookupOwnerRequest, ReadRangeRequest, cache_service_client::CacheServiceClient,
+    LookupOwnerRequest, ReadRangeRequest,
+    cache_service_client::CacheServiceClient,
+    router_service_client::RouterServiceClient,
 };
 use futures::future::try_join_all;
 use std::sync::Arc;
@@ -15,17 +17,25 @@ type MetricsChannel = frontcache_metrics::RpcMetricsService<Channel>;
 
 #[derive(Clone)]
 pub struct CacheClient {
-    local_addr: String,
+    router: RouterServiceClient<MetricsChannel>,
     connections: DashMap<String, CacheServiceClient<MetricsChannel>>,
     _provider: Arc<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl CacheClient {
-    pub async fn new(port: u16) -> Result<Self> {
+    pub async fn new(router_addr: String) -> Result<Self> {
         let provider = frontcache_metrics::init("frontcache_client");
-        let local_addr = format!("localhost:{}", port);
+
+        let channel = Channel::from_shared(format!("http://{}", router_addr))?
+            .connect()
+            .await?;
+        let channel = ServiceBuilder::new()
+            .layer(frontcache_metrics::layer())
+            .service(channel);
+        let router = RouterServiceClient::new(channel);
+
         Ok(Self {
-            local_addr,
+            router,
             connections: DashMap::new(),
             _provider: Arc::new(provider),
         })
@@ -52,11 +62,7 @@ impl CacheClient {
             let key = key.to_string();
             let version = version.to_string();
             tasks.push(async move {
-                let mut local = self_clone
-                    .get_or_create_connection(&self_clone.local_addr)
-                    .await?;
-
-                let owner = local
+                let owner = self_clone.router.clone()
                     .lookup_owner(LookupOwnerRequest {
                         key: key.clone(),
                         offset: block_offset,
@@ -65,7 +71,7 @@ impl CacheClient {
                     .into_inner()
                     .addr;
 
-                let mut client = self_clone.get_or_create_connection(&owner).await?;
+                let mut client = self_clone.get_or_create_cache_connection(&owner).await?;
                 let mut stream = client
                     .read_range(ReadRangeRequest {
                         key,
@@ -98,7 +104,7 @@ impl CacheClient {
         }
     }
 
-    async fn get_or_create_connection(
+    async fn get_or_create_cache_connection(
         &self,
         addr: &str,
     ) -> Result<CacheServiceClient<MetricsChannel>> {

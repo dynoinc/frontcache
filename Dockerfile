@@ -7,5 +7,4 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY frontcache-server /usr/local/bin/frontcache-server
-
-ENTRYPOINT ["/usr/local/bin/frontcache-server"]
+COPY frontcache-router /usr/local/bin/frontcache-router

@@ -1,10 +1,13 @@
 use nix::sys::statvfs::statvfs;
 use tokio::time::{Duration, sleep};
 
-use crate::{
-    cache::{BLOCK_SIZE, Cache},
-    prelude::*,
-};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::Result;
+use parking_lot::RwLock;
+
+use crate::cache::{BLOCK_SIZE, Cache};
 
 const PURGE_INTERVAL: Duration = Duration::from_secs(10);
 const MIN_FREE_PERCENT: u64 = 5;
