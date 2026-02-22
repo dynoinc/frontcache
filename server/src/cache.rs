@@ -121,12 +121,7 @@ impl Cache {
 
                     let outcome = match result_future.await {
                         Ok(arc_result) => arc_result.as_ref().clone(),
-                        Err(_) => {
-                            self.states.remove(&key);
-                            Err(CacheError::CreateFile(Arc::new(anyhow::anyhow!(
-                                "download task dropped for {key:?}"
-                            ))))
-                        }
+                        Err(_) => panic!("download task dropped for {key:?}"),
                     };
 
                     let m = frontcache_metrics::get();
@@ -286,9 +281,9 @@ impl Cache {
         }
 
         for (_, _, path, _) in &victims {
-            if let Err(e) = tokio::fs::remove_file(path).await {
-                tracing::error!("Failed to remove block file {}: {}", path.display(), e);
-            }
+            tokio::fs::remove_file(path)
+                .await
+                .expect("failed to remove block file");
         }
 
         self.index.delete_many(&keys)?;

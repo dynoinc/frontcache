@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use redb::{
-    CommitError, Database, DatabaseError, ReadableDatabase, ReadableTable, StorageError,
-    TableDefinition, TableError, TransactionError,
+    CommitError, Database, DatabaseError, ReadTransaction, ReadableDatabase, ReadableTable,
+    StorageError, TableDefinition, TableError, TransactionError,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -43,6 +43,19 @@ pub struct BlockEntry {
 
 pub struct Index {
     db: Database,
+}
+
+pub struct AllBlocksIter {
+    _txn: ReadTransaction,
+    iter: Box<dyn Iterator<Item = (BlockKey, BlockEntry)>>,
+}
+
+impl Iterator for AllBlocksIter {
+    type Item = (BlockKey, BlockEntry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next()
+    }
 }
 
 impl Index {
@@ -92,20 +105,28 @@ impl Index {
         Ok(())
     }
 
-    pub fn list_all(&self) -> Result<Vec<(BlockKey, BlockEntry)>, IndexError> {
+    pub fn list_all(&self) -> Result<AllBlocksIter, IndexError> {
         let read_txn = self.db.begin_read()?;
         let table = read_txn.open_table(BLOCKS_TABLE)?;
+        let raw_iter = table.iter()?;
 
-        let entries = table
-            .iter()?
-            .filter_map(|item| {
+        // SAFETY: We extend the iterator's lifetime to 'static, but this is safe because:
+        // 1. The iterator is stored in AllBlocksIter alongside _txn
+        // 2. _txn is declared before iter in the struct, so it will be dropped AFTER iter
+        // 3. This ensures the transaction outlives the iterator
+        let iter: Box<dyn Iterator<Item = (BlockKey, BlockEntry)>> = unsafe {
+            std::mem::transmute(Box::new(raw_iter.filter_map(|item| {
                 let (key, value) = item.ok()?;
                 let (object, offset) = key.value();
                 let entry: BlockEntry = serde_json::from_slice(value.value()).ok()?;
                 Some(((object.to_string(), offset), entry))
-            })
-            .collect();
+            }))
+                as Box<dyn Iterator<Item = (BlockKey, BlockEntry)>>)
+        };
 
-        Ok(entries)
+        Ok(AllBlocksIter {
+            _txn: read_txn,
+            iter,
+        })
     }
 }
