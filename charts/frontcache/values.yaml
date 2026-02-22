@@ -1,0 +1,36 @@
+replicaCount:
+  router: 1
+  server: 3
+
+image:
+  repository: frontcache
+  tag: dev
+  pullPolicy: IfNotPresent
+
+router:
+  listen: "0.0.0.0:8081"
+  serverPort: 8080
+  service:
+    type: ClusterIP
+    port: 8081
+
+server:
+  listen: "0.0.0.0:8080"
+  cacheDirs:
+    - /data/cache
+  service:
+    type: ClusterIP
+    port: 8080
+
+minio:
+  rootUser: minioadmin
+  rootPassword: minioadmin
+  buckets:
+    - test
+
+env:
+  RUST_LOG: info
+
+extraEnv: []
+
+resources: {}

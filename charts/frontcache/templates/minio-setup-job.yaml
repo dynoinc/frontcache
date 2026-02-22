@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "frontcache.fullname" . }}-minio-setup
+  labels:
+    {{- include "frontcache.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: hook-succeeded
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "frontcache.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until mc alias set local http://{{ include "frontcache.fullname" . }}-minio:9000 {{ .Values.minio.rootUser }} {{ .Values.minio.rootPassword }}; do
+                echo "Waiting for MinIO..."
+                sleep 2
+              done
+              {{- range .Values.minio.buckets }}
+              mc mb --ignore-existing local/{{ . }}
+              {{- end }}

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frontcache.fullname" . }}-server
+  labels:
+    {{- include "frontcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount.server }}
+  selector:
+    matchLabels:
+      {{- include "frontcache.serverSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "frontcache.serverSelectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ include "frontcache.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/frontcache-server"]
+          args:
+            - "--listen"
+            - {{ .Values.server.listen | quote }}
+            - "--cache-dirs"
+            - {{ join "," .Values.server.cacheDirs | quote }}
+          ports:
+            - name: grpc
+              containerPort: 8080
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ .Values.minio.rootUser | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ .Values.minio.rootPassword | quote }}
+            - name: AWS_ENDPOINT
+              value: "http://{{ include "frontcache.fullname" . }}-minio:9000"
+            - name: AWS_ALLOW_HTTP
+              value: "true"
+            - name: AWS_REGION
+              value: "us-east-1"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            {{- range $i, $dir := .Values.server.cacheDirs }}
+            - name: cache-{{ $i }}
+              mountPath: {{ $dir }}
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- range $i, $dir := .Values.server.cacheDirs }}
+        - name: cache-{{ $i }}
+          emptyDir: {}
+        {{- end }}

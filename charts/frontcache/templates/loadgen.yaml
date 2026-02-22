@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "frontcache.fullname" . }}-loadgen-proto
+  labels:
+    {{- include "frontcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loadgen
+data:
+  cache.proto: |
+    syntax = "proto3";
+
+    package cache;
+
+    service RouterService {
+      rpc LookupOwner(LookupOwnerRequest) returns (LookupOwnerResponse);
+    }
+
+    service CacheService {
+      rpc ReadRange(ReadRangeRequest) returns (stream ReadRangeResponse);
+    }
+
+    message LookupOwnerRequest {
+      string key = 1;
+      uint64 offset = 2;
+    }
+
+    message LookupOwnerResponse {
+      string addr = 1;
+    }
+
+    message ReadRangeRequest {
+      string key = 1;
+      uint64 offset = 2;
+      uint64 length = 3;
+      string version = 4;
+    }
+
+    message ReadRangeResponse {
+      bytes data = 1;
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frontcache.fullname" . }}-loadgen
+  labels:
+    {{- include "frontcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "frontcache.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: loadgen
+  template:
+    metadata:
+      labels:
+        {{- include "frontcache.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: loadgen
+    spec:
+      initContainers:
+        - name: seed
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until mc alias set local http://{{ include "frontcache.fullname" . }}-minio:9000 {{ .Values.minio.rootUser }} {{ .Values.minio.rootPassword }}; do
+                echo "Waiting for MinIO..."
+                sleep 2
+              done
+              {{- range .Values.minio.buckets }}
+              mc mb --ignore-existing local/{{ . }}
+              {{- end }}
+              for i in 1 2 3 4 5; do
+                echo "Seeding test/file${i}.bin (1MB)..."
+                head -c 1048576 /dev/urandom > /tmp/file${i}.bin
+                mc cp --attr "x-frontcache-version=v1" /tmp/file${i}.bin local/test/file${i}.bin
+              done
+              echo "Seeding complete."
+      containers:
+        - name: loadgen
+          image: alpine:3.21
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              apk add --no-cache curl
+              ARCH=$(uname -m); case $ARCH in aarch64) ARCH=arm64;; x86_64) ARCH=x86_64;; esac
+              curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.2/grpcurl_1.9.2_linux_${ARCH}.tar.gz" | tar xz -C /usr/local/bin grpcurl
+              set +e
+
+              ROUTER={{ include "frontcache.fullname" . }}-router:{{ .Values.router.service.port }}
+              SERVER={{ include "frontcache.fullname" . }}-server:{{ .Values.server.service.port }}
+              FILES="file1.bin file2.bin file3.bin file4.bin file5.bin"
+              i=0
+              while true; do
+                for f in $FILES; do
+                  KEY="s3://test/${f}"
+                  VERSION="v1"
+                  OFFSET=$(( (i * 4096) % 1048576 ))
+                  echo "--- LookupOwner key=$KEY ---"
+                  grpcurl -plaintext -import-path /proto -proto cache.proto \
+                    -d "{\"key\":\"$KEY\",\"offset\":$OFFSET}" \
+                    "$ROUTER" cache.RouterService/LookupOwner || true
+                  echo "--- ReadRange key=$KEY offset=$OFFSET len=4096 ---"
+                  grpcurl -plaintext -import-path /proto -proto cache.proto \
+                    -d "{\"key\":\"$KEY\",\"offset\":$OFFSET,\"length\":4096,\"version\":\"$VERSION\"}" \
+                    "$SERVER" cache.CacheService/ReadRange || true
+                  i=$((i + 1))
+                  sleep 0.5
+                done
+              done
+          volumeMounts:
+            - name: proto
+              mountPath: /proto
+      volumes:
+        - name: proto
+          configMap:
+            name: {{ include "frontcache.fullname" . }}-loadgen-proto

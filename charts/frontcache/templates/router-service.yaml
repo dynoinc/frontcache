@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "frontcache.fullname" . }}-router
+  labels:
+    {{- include "frontcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: router
+spec:
+  type: {{ .Values.router.service.type }}
+  ports:
+    - port: {{ .Values.router.service.port }}
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "frontcache.routerSelectorLabels" . | nindent 4 }}

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frontcache.fullname" . }}-router
+  labels:
+    {{- include "frontcache.labels" . | nindent 4 }}
+    app.kubernetes.io/component: router
+spec:
+  replicas: {{ .Values.replicaCount.router }}
+  selector:
+    matchLabels:
+      {{- include "frontcache.routerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "frontcache.routerSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "frontcache.fullname" . }}
+      containers:
+        - name: router
+          image: {{ include "frontcache.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/frontcache-router"]
+          args:
+            - "--listen"
+            - {{ .Values.router.listen | quote }}
+            - "--label"
+            - {{ include "frontcache.serverLabelSelector" . | quote }}
+            - "--server-port"
+            - {{ .Values.router.serverPort | quote }}
+          ports:
+            - name: grpc
+              containerPort: 8081
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
