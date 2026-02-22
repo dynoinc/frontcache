@@ -93,6 +93,18 @@ impl Index {
         Ok(())
     }
 
+    pub fn delete_many(&self, keys: &[BlockKey]) -> Result<(), IndexError> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(BLOCKS_TABLE)?;
+            for key in keys {
+                table.remove(key)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
     pub fn list_all(&self) -> Result<AllBlocksIter, IndexError> {
         let read_txn = self.db.begin_read()?;
         let table = read_txn.open_table(BLOCKS_TABLE)?;

@@ -61,25 +61,22 @@ impl Cache {
     }
 
     pub async fn init_from_disk(&self) -> Result<()> {
+        let mut cleanup_keys = Vec::new();
+
         for (block_key, entry) in self.index.list_all()? {
             match entry.state {
                 BlockState::Writing | BlockState::Purging => {
                     tracing::warn!("Found incomplete operation, cleaning up: {:?}", block_key);
                     let block_path = PathBuf::from(&entry.path);
                     let _ = tokio::fs::remove_file(&block_path).await;
-                    self.index.delete(&block_key)?;
+                    cleanup_keys.push(block_key);
                 }
                 BlockState::Downloaded => {
                     let block_path = PathBuf::from(&entry.path);
                     if !block_path.exists() {
                         bail!("Block {:?} in index is missing from disk", block_key);
                     }
-                    let block = Block::from_disk(
-                        block_path.clone(),
-                        entry.version.clone(),
-                        block_key.clone(),
-                        self.index.clone(),
-                    )?;
+                    let block = Block::from_disk(block_path, entry.version.clone())?;
                     self.states.insert(
                         block_key,
                         CacheState::Ready {
@@ -88,6 +85,10 @@ impl Cache {
                     );
                 }
             }
+        }
+
+        if !cleanup_keys.is_empty() {
+            self.index.delete_many(&cleanup_keys)?;
         }
 
         tracing::info!("Loaded {} blocks from disk", self.states.len());
@@ -200,8 +201,6 @@ impl Cache {
             block_path.clone(),
             read_result.data,
             read_result.version.clone(),
-            key.clone(),
-            self.index.clone(),
         )
         .await
         {
@@ -271,11 +270,19 @@ impl Cache {
                 )
             }))?;
 
-        for (_, key, _, _) in victims {
-            if let Some((_, CacheState::Ready { block })) = self.states.remove(&key) {
-                block.delete_on_drop();
-            }
+        let keys: Vec<BlockKey> = victims.iter().map(|(_, key, _, _)| key.clone()).collect();
+
+        for key in &keys {
+            self.states.remove(key);
         }
+
+        for (_, _, path, _) in &victims {
+            tokio::fs::remove_file(path)
+                .await
+                .expect("failed to remove block file");
+        }
+
+        self.index.delete_many(&keys)?;
 
         Ok(())
     }

@@ -1,6 +1,5 @@
 use std::{
-    fs::File,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -8,30 +7,17 @@ use bytes::Bytes;
 use memmap2::Mmap;
 use tokio::io::AsyncWriteExt;
 
-use crate::{
-    index::{BlockKey, Index},
-    prelude::*,
-};
+use crate::prelude::*;
 
 pub struct Block {
     path: PathBuf,
-    _file: File,
     mmap: Mmap,
     version: String,
-    block_key: BlockKey,
-    index: Arc<Index>,
-    should_delete_on_drop: AtomicBool,
     last_accessed: AtomicU64,
 }
 
 impl Block {
-    pub async fn new(
-        path: PathBuf,
-        data: Bytes,
-        version: String,
-        block_key: BlockKey,
-        index: Arc<Index>,
-    ) -> Result<Self> {
+    pub async fn new(path: PathBuf, data: Bytes, version: String) -> Result<Self> {
         let mut file = tokio::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -48,33 +34,20 @@ impl Block {
 
         Ok(Self {
             path,
-            _file: std_file,
             mmap,
             version,
-            block_key,
-            index,
-            should_delete_on_drop: AtomicBool::new(false),
             last_accessed: AtomicU64::new(Self::now()),
         })
     }
 
-    pub fn from_disk(
-        path: PathBuf,
-        version: String,
-        block_key: BlockKey,
-        index: Arc<Index>,
-    ) -> Result<Self> {
+    pub fn from_disk(path: PathBuf, version: String) -> Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
         Ok(Self {
             path,
-            _file: file,
             mmap,
             version,
-            block_key,
-            index,
-            should_delete_on_drop: AtomicBool::new(false),
             last_accessed: AtomicU64::new(Self::now()),
         })
     }
@@ -91,10 +64,6 @@ impl Block {
         &self.version
     }
 
-    pub fn delete_on_drop(&self) {
-        self.should_delete_on_drop.store(true, Ordering::Release);
-    }
-
     pub fn record_access(&self) {
         self.last_accessed.store(Self::now(), Ordering::Relaxed);
     }
@@ -108,14 +77,5 @@ impl Block {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
-    }
-}
-
-impl Drop for Block {
-    fn drop(&mut self) {
-        if self.should_delete_on_drop.load(Ordering::Acquire) {
-            let _ = std::fs::remove_file(&self.path);
-            let _ = self.index.delete(&self.block_key);
-        }
     }
 }
