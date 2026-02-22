@@ -39,6 +39,7 @@ impl ReadStream {
 
 #[pymethods]
 impl Client {
+    #[pyo3(signature = (key, *, offset, length, version=None))]
     fn stream_range(
         &self,
         key: String,

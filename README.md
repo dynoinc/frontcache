@@ -65,7 +65,7 @@ use futures::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = CacheClient::new("router:8081".to_string()).await?;
+    let client = CacheClient::new("http://router:8081".to_string()).await?;
 
     // Buffer full response in memory by collecting stream chunks.
     let length = 1024 * 1024;
@@ -87,11 +87,11 @@ import asyncio
 import frontcache
 
 async def main():
-    client = await frontcache.connect("router:8081")
+    client = await frontcache.connect("http://router:8081")
 
     # Stream directly to disk.
     with open("download.bin", "wb") as f:
-        async for chunk in client.stream_range("s3://bucket/file", 0, 1024 * 1024, "v1"):
+        async for chunk in client.stream_range("s3://bucket/file", offset=0, length=1024 * 1024, version="v1"):
             f.write(chunk)
 
 asyncio.run(main())

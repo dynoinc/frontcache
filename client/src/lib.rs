@@ -69,7 +69,7 @@ impl CacheClient {
         let config = ClientConfig::from_env();
         frontcache_metrics::init();
 
-        let channel = Channel::from_shared(format!("http://{}", router_addr))?
+        let channel = Channel::from_shared(router_addr)?
             .timeout(config.lookup_timeout)
             .connect()
             .await?;
@@ -154,18 +154,21 @@ impl CacheClient {
             .max_delay(Duration::from_secs(1))
             .take(self.config.max_retries);
 
+        let read_timeout = self.config.read_timeout;
         let response = Retry::spawn(strategy, || {
             let mut client = client.clone();
             let key = key.clone();
             let version = version.clone();
             async move {
+                let mut req = tonic::Request::new(ReadRangeRequest {
+                    key,
+                    offset: read_offset,
+                    length: read_len,
+                    version,
+                });
+                req.set_timeout(read_timeout);
                 let stream = client
-                    .read_range(ReadRangeRequest {
-                        key,
-                        offset: read_offset,
-                        length: read_len,
-                        version,
-                    })
+                    .read_range(req)
                     .await
                     .map_err(|s| {
                         if is_retryable(s.code()) {
@@ -230,8 +233,7 @@ impl CacheClient {
             return Ok(client.clone());
         }
 
-        let endpoint =
-            Channel::from_shared(format!("http://{}", addr))?.timeout(self.config.read_timeout);
+        let endpoint = Channel::from_shared(format!("http://{}", addr))?;
 
         let strategy = ExponentialBackoff::from_millis(100)
             .factor(2)
