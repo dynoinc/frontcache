@@ -22,6 +22,7 @@ pub struct Metrics {
     pub store_read_bytes: Histogram<f64>,
     pub cache_get_duration: Histogram<f64>,
     pub disk_available_bytes: Gauge<f64>,
+    pub disk_total_bytes: Gauge<f64>,
     pub ring_members: Gauge<u64>,
     pub ring_member_changes: Counter<u64>,
 }
@@ -74,6 +75,10 @@ pub fn init(service_name: &'static str) -> SdkMeterProvider {
         disk_available_bytes: meter
             .f64_gauge("disk_available_bytes")
             .with_description("Available disk space in bytes")
+            .build(),
+        disk_total_bytes: meter
+            .f64_gauge("disk_total_bytes")
+            .with_description("Total disk space in bytes")
             .build(),
         ring_members: meter
             .u64_gauge("ring_members")

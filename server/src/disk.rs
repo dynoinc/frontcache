@@ -1,5 +1,4 @@
 use nix::sys::statvfs::statvfs;
-use opentelemetry::KeyValue;
 use tokio::time::{Duration, sleep};
 
 use crate::{
@@ -41,13 +40,6 @@ impl Disk {
     pub async fn update_stats(&self) -> Result<DiskStats> {
         let stats = get_disk_stats(&self.path)?;
         *self.stats.write() = stats;
-
-        let m = frontcache_metrics::get();
-        m.disk_available_bytes.record(
-            stats.available as f64,
-            &[KeyValue::new("path", self.path.display().to_string())],
-        );
-
         Ok(stats)
     }
 }
@@ -74,10 +66,14 @@ pub fn start_purger(cache: Arc<Cache>) {
         loop {
             sleep(PURGE_INTERVAL).await;
 
+            let mut total_bytes: u64 = 0;
+            let mut available_bytes: u64 = 0;
             for disk in cache.disks() {
                 let stats = disk.update_stats().await;
                 let blocks_to_purge = stats
                     .map(|s| {
+                        total_bytes += s.total;
+                        available_bytes += s.available;
                         let min_free = (s.total * MIN_FREE_PERCENT) / 100;
                         let space_to_free = min_free.saturating_sub(s.available);
                         space_to_free.div_ceil(BLOCK_SIZE) as usize
@@ -88,6 +84,9 @@ pub fn start_purger(cache: Arc<Cache>) {
                     tracing::error!("Purge failed for {:?}: {}", disk.path(), e);
                 }
             }
+            let m = frontcache_metrics::get();
+            m.disk_total_bytes.record(total_bytes as f64, &[]);
+            m.disk_available_bytes.record(available_bytes as f64, &[]);
         }
     });
 }
