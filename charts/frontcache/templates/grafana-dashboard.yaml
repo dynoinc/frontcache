@@ -187,7 +187,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "sum(rate(rpc_duration_seconds_count{otel_scope_name=\"frontcache_server\", rpc_grpc_status=\"Ok\"}[5m]))",
+              "expr": "sum(rate(rpc_duration_seconds_count{service_name=\"frontcache_server\", rpc_grpc_status=\"Ok\"}[5m]))",
               "legendFormat": "ReadRange OK",
               "refId": "A"
             }
@@ -401,7 +401,7 @@ data:
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(rpc_duration_seconds_count{otel_scope_name=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (rpc_grpc_status)",
+              "expr": "sum(rate(rpc_duration_seconds_count{service_name=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (rpc_grpc_status)",
               "legendFormat": "{{`{{rpc_grpc_status}}`}}",
               "range": true,
               "refId": "A"
@@ -441,7 +441,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_seconds_bucket{otel_scope_name=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_seconds_bucket{service_name=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (le))",
               "legendFormat": "p50",
               "refId": "A"
             }
@@ -480,7 +480,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_seconds_bucket{otel_scope_name=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_seconds_bucket{service_name=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (le))",
               "legendFormat": "p99",
               "refId": "A"
             }
@@ -600,7 +600,7 @@ data:
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(rpc_duration_seconds_count{otel_scope_name=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (rpc_grpc_status)",
+              "expr": "sum(rate(rpc_duration_seconds_count{service_name=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (rpc_grpc_status)",
               "legendFormat": "{{`{{rpc_grpc_status}}`}}",
               "range": true,
               "refId": "A"
@@ -640,7 +640,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_seconds_bucket{otel_scope_name=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_seconds_bucket{service_name=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (le))",
               "legendFormat": "p50",
               "refId": "A"
             }
@@ -679,7 +679,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_seconds_bucket{otel_scope_name=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_seconds_bucket{service_name=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (le))",
               "legendFormat": "p99",
               "refId": "A"
             }

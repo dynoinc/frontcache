@@ -14,6 +14,7 @@ use opentelemetry_sdk::{
 use tonic::Code;
 use tower::{Layer, Service, ServiceExt};
 
+static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub struct Metrics {
@@ -27,32 +28,34 @@ pub struct Metrics {
     pub ring_member_changes: Counter<u64>,
 }
 
-pub fn init(service_name: &'static str) -> SdkMeterProvider {
-    let provider = if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-        tracing::info!("Exporting metrics to: {}", endpoint);
-        let exporter = MetricExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .build()
-            .expect("Failed to create OTLP exporter");
+pub fn init() {
+    let provider = METER_PROVIDER.get_or_init(|| {
+        if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+            tracing::info!("Exporting metrics to: {}", endpoint);
+            let exporter = MetricExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()
+                .expect("Failed to create OTLP exporter");
 
-        let reader = PeriodicReader::builder(exporter, runtime::Tokio)
-            .with_interval(std::time::Duration::from_secs(10))
-            .build();
+            let reader = PeriodicReader::builder(exporter, runtime::Tokio)
+                .with_interval(std::time::Duration::from_secs(10))
+                .build();
 
-        SdkMeterProvider::builder().with_reader(reader).build()
-    } else {
-        tracing::info!("No OTEL_EXPORTER_OTLP_ENDPOINT set, using no-op provider");
-        SdkMeterProvider::builder().build()
-    };
+            SdkMeterProvider::builder().with_reader(reader).build()
+        } else {
+            tracing::info!("No OTEL_EXPORTER_OTLP_ENDPOINT set, using no-op provider");
+            SdkMeterProvider::builder().build()
+        }
+    });
 
-    let meter = provider.meter(service_name);
+    let meter = provider.meter("frontcache");
 
     let latency_buckets = vec![
         0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
     ];
 
-    let metrics = Metrics {
+    METRICS.get_or_init(|| Metrics {
         rpc_duration: meter
             .f64_histogram("rpc_duration_seconds")
             .with_description("RPC request duration in seconds")
@@ -88,15 +91,20 @@ pub fn init(service_name: &'static str) -> SdkMeterProvider {
             .u64_counter("ring_member_changes")
             .with_description("Number of members added or removed from the hash ring")
             .build(),
-    };
+    });
+}
 
-    let _ = METRICS.set(metrics);
-    provider
+pub fn shutdown() -> opentelemetry_sdk::metrics::MetricResult<()> {
+    if let Some(provider) = METER_PROVIDER.get() {
+        provider.shutdown()?;
+    }
+    Ok(())
 }
 
 pub fn get() -> &'static Metrics {
     METRICS.get().expect("Metrics not initialized")
 }
+
 
 // Tower layer for automatic RPC metrics on both client and server
 #[derive(Clone)]

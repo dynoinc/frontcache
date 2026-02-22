@@ -5,7 +5,7 @@ Distributed pull-through cache for object storage (S3/GCS) written in < 2000 lin
 ## Features
 
 - Block-based caching with 16MB fixed blocks
-- Consistent hashing for distributed block ownership
+- Straw2 hashing for distributed block ownership
 - Kubernetes auto-discovery
 - Memory-mapped zero-copy reads
 - OpenTelemetry metrics for observability
@@ -14,7 +14,7 @@ Distributed pull-through cache for object storage (S3/GCS) written in < 2000 lin
 
 FrontCache runs as two binaries:
 
-- **frontcache-router** — stateless routing layer. Accepts `LookupOwner` RPCs and returns the server pod that owns a given block using consistent hashing.
+- **frontcache-router** — stateless routing layer. Accepts `LookupOwner` RPCs and returns the server pod that owns a given block using straw2 hashing over 262,144 virtual partitions.
 - **frontcache-server** — data plane. Accepts `ReadRange` RPCs, fetches from object storage on cache miss, and serves from local disk on cache hit.
 
 Clients talk to the router to discover which server owns a block, then read directly from that server.
@@ -38,11 +38,7 @@ Clients talk to the router to discover which server owns a block, then read dire
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for metrics (e.g., `http://otel-collector:4317`). If unset, metrics are disabled. |
-
-Metrics are emitted under the instrumentation scope `frontcache_server` (server), `frontcache_router` (router), or `frontcache_client` (client library).
+Metrics are exported via [OpenTelemetry](https://opentelemetry.io/docs/languages/sdk-configuration/general/) using standard `OTEL_*` environment variables. If `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, a no-op provider is used.
 
 ### Cache Purger
 

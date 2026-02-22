@@ -1,64 +1,107 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    hash::{DefaultHasher, Hash, Hasher},
-};
+use std::sync::Arc;
 
-const VIRTUAL_NODES: usize = 150;
+use parking_lot::RwLock;
+use rayon::prelude::*;
+use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 
-pub struct ConsistentHashRing {
-    ring: BTreeMap<u64, String>,
-    nodes: HashSet<String>,
+const NUM_VPARTITIONS: usize = 1 << 18; // 262,144
+const VP_MASK: u64 = NUM_VPARTITIONS as u64 - 1;
+
+struct Snapshot {
+    servers: Vec<String>,
+    table: Vec<u16>,
 }
 
-impl ConsistentHashRing {
+/// Straw2-based router. All methods take `&self` — writes build a new snapshot
+/// without holding any lock, then atomically swap it in. Readers are never blocked.
+pub struct Straw2Router {
+    snapshot: RwLock<Arc<Snapshot>>,
+}
+
+impl Straw2Router {
     pub fn new() -> Self {
         Self {
-            ring: BTreeMap::new(),
-            nodes: HashSet::new(),
+            snapshot: RwLock::new(Arc::new(Snapshot {
+                servers: Vec::new(),
+                table: Vec::new(),
+            })),
         }
     }
 
-    pub fn add_node(&mut self, addr: String) {
-        if self.nodes.insert(addr.clone()) {
-            for i in 0..VIRTUAL_NODES {
-                let hash = self.hash(&format!("{}:{}", addr, i));
-                self.ring.insert(hash, addr.clone());
+    pub fn add_node(&self, addr: String) {
+        let old = self.snapshot.read().clone();
+        let mut servers = old.servers.clone();
+        match servers.binary_search(&addr) {
+            Ok(_) => return,
+            Err(pos) => servers.insert(pos, addr),
+        }
+        let table = rebuild_table(&servers);
+        let len = servers.len();
+        *self.snapshot.write() = Arc::new(Snapshot { servers, table });
+        record_metrics(len, "added");
+    }
+
+    pub fn remove_node(&self, addr: &str) {
+        let old = self.snapshot.read().clone();
+        let mut servers = old.servers.clone();
+        match servers.binary_search_by(|s| s.as_str().cmp(addr)) {
+            Ok(pos) => {
+                servers.remove(pos);
             }
-            self.record_metrics("added");
+            Err(_) => return,
         }
+        let table = rebuild_table(&servers);
+        let len = servers.len();
+        *self.snapshot.write() = Arc::new(Snapshot { servers, table });
+        record_metrics(len, "removed");
     }
 
-    pub fn remove_node(&mut self, addr: &str) {
-        if self.nodes.remove(addr) {
-            for i in 0..VIRTUAL_NODES {
-                let hash = self.hash(&format!("{}:{}", addr, i));
-                self.ring.remove(&hash);
-            }
-            self.record_metrics("removed");
+    pub fn set_servers(&self, mut servers: Vec<String>) {
+        servers.sort();
+        servers.dedup();
+        let table = rebuild_table(&servers);
+        let len = servers.len();
+        *self.snapshot.write() = Arc::new(Snapshot { servers, table });
+        record_metrics(len, "sync");
+    }
+
+    pub fn get_owner(&self, object: &str, block_offset: u64) -> Option<String> {
+        let snap = self.snapshot.read().clone();
+        if snap.servers.is_empty() {
+            return None;
         }
-    }
-
-    fn record_metrics(&self, action: &'static str) {
-        let m = frontcache_metrics::get();
-        m.ring_members.record(self.nodes.len() as u64, &[]);
-        m.ring_member_changes
-            .add(1, &[opentelemetry::KeyValue::new("action", action)]);
-    }
-
-    pub fn get_owner(&self, object: &str, block_offset: u64) -> Option<&String> {
         let key = format!("{}:{}", object, block_offset);
-        let hash = self.hash(&key);
-
-        self.ring
-            .range(hash..)
-            .next()
-            .or_else(|| self.ring.iter().next())
-            .map(|(_, node)| node)
+        let vp = (xxh3_64(key.as_bytes()) & VP_MASK) as usize;
+        Some(snap.servers[snap.table[vp] as usize].clone())
     }
+}
 
-    fn hash(&self, key: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        hasher.finish()
+fn rebuild_table(servers: &[String]) -> Vec<u16> {
+    if servers.is_empty() {
+        return Vec::new();
     }
+    (0..NUM_VPARTITIONS)
+        .into_par_iter()
+        .map(|vp| straw2_select(vp as u64, servers))
+        .collect()
+}
+
+fn straw2_select(vp: u64, servers: &[String]) -> u16 {
+    let mut best_idx: u16 = 0;
+    let mut best_hash: u64 = 0;
+    for (i, server) in servers.iter().enumerate() {
+        let h = xxh3_64_with_seed(server.as_bytes(), vp);
+        if h > best_hash || i == 0 {
+            best_hash = h;
+            best_idx = i as u16;
+        }
+    }
+    best_idx
+}
+
+fn record_metrics(server_count: usize, action: &'static str) {
+    let m = frontcache_metrics::get();
+    m.ring_members.record(server_count as u64, &[]);
+    m.ring_member_changes
+        .add(1, &[opentelemetry::KeyValue::new("action", action)]);
 }

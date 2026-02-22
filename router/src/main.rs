@@ -10,10 +10,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use parking_lot::RwLock;
 
 use membership::K8sMembership;
-use ring::ConsistentHashRing;
+use ring::Straw2Router;
 use server::RouterServer;
 
 #[derive(Parser, Debug)]
@@ -33,11 +32,11 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let meter_provider = frontcache_metrics::init("frontcache_router");
+    frontcache_metrics::init();
 
     let args = Args::parse();
 
-    let ring = Arc::new(RwLock::new(ConsistentHashRing::new()));
+    let ring = Arc::new(Straw2Router::new());
 
     if std::path::Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token").exists() {
         tracing::info!("Kubernetes environment detected, enabling pod discovery");
@@ -51,13 +50,12 @@ async fn main() -> Result<()> {
         });
     } else {
         tracing::info!("Running in standalone mode");
-        ring.write()
-            .add_node(format!("localhost:{}", args.server_port));
+        ring.add_node(format!("localhost:{}", args.server_port));
     }
 
     tracing::info!("Starting frontcache router on {}", args.listen);
     RouterServer::new(ring).serve(args.listen).await?;
 
-    meter_provider.shutdown()?;
+    frontcache_metrics::shutdown()?;
     Ok(())
 }

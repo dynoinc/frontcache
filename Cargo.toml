@@ -41,6 +41,8 @@ clap = { version = "4.5", features = ["derive"] }
 libc = "0.2"
 nix = { version = "0.31", features = ["fs"] }
 tikv-jemallocator = "0.6"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rayon = "1.10"
 pyo3 = { version = "0.27", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }
 pyo3-bytes = "0.5"

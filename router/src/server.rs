@@ -6,19 +6,18 @@ use frontcache_proto::{
     LookupOwnerRequest, LookupOwnerResponse,
     router_service_server::{RouterService, RouterServiceServer},
 };
-use parking_lot::RwLock;
 use tonic::{Request, Response, Status, transport::Server};
 
-use crate::ring::ConsistentHashRing;
+use crate::ring::Straw2Router;
 
 const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
 
 pub struct RouterServer {
-    ring: Arc<RwLock<ConsistentHashRing>>,
+    ring: Arc<Straw2Router>,
 }
 
 impl RouterServer {
-    pub fn new(ring: Arc<RwLock<ConsistentHashRing>>) -> Self {
+    pub fn new(ring: Arc<Straw2Router>) -> Self {
         Self { ring }
     }
 
@@ -52,13 +51,11 @@ impl RouterService for RouterServer {
         let req = request.get_ref();
         let block_offset = (req.offset / BLOCK_SIZE) * BLOCK_SIZE;
 
-        let ring = self.ring.read();
-        let owner = ring
+        let addr = self
+            .ring
             .get_owner(&req.key, block_offset)
             .ok_or_else(|| Status::unavailable("no nodes available"))?;
 
-        Ok(Response::new(LookupOwnerResponse {
-            addr: owner.clone(),
-        }))
+        Ok(Response::new(LookupOwnerResponse { addr }))
     }
 }

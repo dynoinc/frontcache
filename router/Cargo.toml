@@ -18,3 +18,5 @@ clap = { workspace = true }
 tikv-jemallocator = { workspace = true }
 opentelemetry = { workspace = true }
 futures-util = { workspace = true }
+xxhash-rust = { workspace = true }
+rayon = { workspace = true }

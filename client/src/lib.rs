@@ -59,13 +59,12 @@ pub struct CacheClient {
     router: RouterServiceClient<MetricsChannel>,
     connections: DashMap<String, CacheServiceClient<MetricsChannel>>,
     config: Arc<ClientConfig>,
-    _provider: Arc<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl CacheClient {
     pub async fn new(router_addr: String) -> Result<Self> {
         let config = ClientConfig::from_env();
-        let provider = frontcache_metrics::init("frontcache_client");
+        frontcache_metrics::init();
 
         let channel = Channel::from_shared(format!("http://{}", router_addr))?
             .timeout(config.lookup_timeout)
@@ -80,7 +79,6 @@ impl CacheClient {
             router,
             connections: DashMap::new(),
             config: Arc::new(config),
-            _provider: Arc::new(provider),
         })
     }
 

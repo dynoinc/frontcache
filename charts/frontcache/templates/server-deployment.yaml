@@ -34,6 +34,8 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            - name: OTEL_SERVICE_NAME
+              value: "frontcache_server"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
             - name: AWS_ACCESS_KEY_ID

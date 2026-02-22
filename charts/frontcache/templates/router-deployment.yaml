@@ -37,6 +37,8 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            - name: OTEL_SERVICE_NAME
+              value: "frontcache_router"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
             {{- with .Values.extraEnv }}
