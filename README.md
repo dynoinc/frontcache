@@ -66,7 +66,7 @@ use frontcache_client::CacheClient;
 async fn main() -> Result<()> {
     let client = CacheClient::new("router:8081".to_string()).await?;
 
-    let data = client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1").await?;
+    let data = client.read_range("s3://bucket/file", 0, 1024 * 1024, Some("v1")).await?;
     println!("Read {} bytes", data.len());
     Ok(())
 }
@@ -81,7 +81,7 @@ import frontcache
 async def main():
     client = await frontcache.connect("router:8081")
 
-    data = await client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1")
+    data = await client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1")  # or omit version for immutable objects
     print(f"Read {len(data)} bytes")
 
 asyncio.run(main())

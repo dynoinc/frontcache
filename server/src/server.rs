@@ -73,11 +73,13 @@ impl CacheService for CacheServer {
             }
         })?;
 
-        if block.version() != req.version {
+        if let Some(version) = &req.version
+            && block.version() != version
+        {
             return Err(Status::failed_precondition(format!(
                 "version mismatch: cached={}, requested={}",
                 block.version(),
-                req.version
+                version
             )));
         }
 

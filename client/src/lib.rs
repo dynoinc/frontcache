@@ -87,7 +87,7 @@ impl CacheClient {
         key: &str,
         offset: u64,
         length: u64,
-        version: &str,
+        version: Option<&str>,
     ) -> Result<Bytes> {
         let end_offset = offset + length;
         let mut tasks = Vec::new();
@@ -101,7 +101,7 @@ impl CacheClient {
 
             let self_clone = self.clone();
             let key = key.to_string();
-            let version = version.to_string();
+            let version = version.map(|v| v.to_string());
             tasks.push(async move {
                 let owner = self_clone.lookup_owner(&key, block_offset).await?;
                 let client = self_clone.get_or_create_cache_connection(&owner).await?;
