@@ -12,8 +12,8 @@ struct Snapshot {
     table: Vec<u16>,
 }
 
-/// Straw2-based router. All methods take `&self` — writes build a new snapshot
-/// without holding any lock, then atomically swap it in. Readers are never blocked.
+/// Future extensions: weighted servers (ln(h/MAX)/weight), replication (top-K),
+/// incremental rebuild on single-server changes.
 pub struct Straw2Router {
     snapshot: RwLock<Arc<Snapshot>>,
 }

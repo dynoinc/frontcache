@@ -106,7 +106,6 @@ pub fn get() -> &'static Metrics {
 }
 
 
-// Tower layer for automatic RPC metrics on both client and server
 #[derive(Clone)]
 pub struct RpcMetricsLayer;
 
