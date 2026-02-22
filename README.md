@@ -10,22 +10,39 @@ Distributed pull-through cache for object storage (S3/GCS) written in < 2000 lin
 - Memory-mapped zero-copy reads
 - OpenTelemetry metrics for observability
 
+## Architecture
+
+FrontCache runs as two binaries:
+
+- **frontcache-router** — stateless routing layer. Accepts `LookupOwner` RPCs and returns the server pod that owns a given block using consistent hashing.
+- **frontcache-server** — data plane. Accepts `ReadRange` RPCs, fetches from object storage on cache miss, and serves from local disk on cache hit.
+
+Clients talk to the router to discover which server owns a block, then read directly from that server.
+
 ## Configuration
 
-### Command Line Flags
+### Router Flags (`frontcache-router`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--listen` | `0.0.0.0:8081` | Address to listen on |
+| `--label` | `app=frontcache` | Label selector for Kubernetes pod discovery |
+| `--server-port` | `8080` | Port that server pods listen on |
+
+### Server Flags (`frontcache-server`)
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | `0.0.0.0:8080` | Address to listen on |
 | `--cache-dirs` | `/tmp/frontcache` | Cache directories (comma-separated for multiple) |
-| `--label` | `app=frontcache` | Label selector for Kubernetes pod discovery |
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint for metrics (e.g., `http://otel-collector:4317`). If unset, metrics are disabled. |
-| `OTEL_SERVICE_NAME` | Service name resource attribute. The metrics instrumentation scope defaults to `frontcache_server` (server) and `frontcache_client` (client). |
+
+Metrics are emitted under the instrumentation scope `frontcache_server` (server), `frontcache_router` (router), or `frontcache_client` (client library).
 
 ### Cache Purger
 
@@ -33,7 +50,7 @@ The server runs a background purger that monitors disk usage every 10 seconds. W
 
 ## Kubernetes
 
-The server auto-discovers peers by watching pods with a matching label selector (`--label`). The ServiceAccount needs RBAC permissions:
+The router auto-discovers server pods by watching pods with a matching label selector (`--label`). The ServiceAccount needs RBAC permissions:
 
 ```yaml
 rules:
@@ -51,7 +68,7 @@ use frontcache_client::CacheClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = CacheClient::new(8080).await?;
+    let client = CacheClient::new("router:8081".to_string()).await?;
 
     let data = client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1").await?;
     println!("Read {} bytes", data.len());
@@ -66,7 +83,7 @@ import asyncio
 import frontcache
 
 async def main():
-    client = await frontcache.connect(8080)
+    client = await frontcache.connect("router:8081")
 
     data = await client.read_range("s3://bucket/file", 0, 1024 * 1024, "v1")
     print(f"Read {len(data)} bytes")
