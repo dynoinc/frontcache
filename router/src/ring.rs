@@ -32,11 +32,12 @@ impl Straw2Router {
 
     pub fn add_node(&self, addr: String) {
         let old = self.snapshot.read().clone();
-        let mut servers = old.servers.clone();
-        match servers.binary_search(&addr) {
+        let pos = match old.servers.binary_search(&addr) {
             Ok(_) => return,
-            Err(pos) => servers.insert(pos, addr),
-        }
+            Err(pos) => pos,
+        };
+        let mut servers = old.servers.clone();
+        servers.insert(pos, addr);
         let table = rebuild_table(&servers);
         let len = servers.len();
         *self.snapshot.write() = Arc::new(Snapshot { servers, table });
@@ -45,13 +46,12 @@ impl Straw2Router {
 
     pub fn remove_node(&self, addr: &str) {
         let old = self.snapshot.read().clone();
-        let mut servers = old.servers.clone();
-        match servers.binary_search_by(|s| s.as_str().cmp(addr)) {
-            Ok(pos) => {
-                servers.remove(pos);
-            }
+        let pos = match old.servers.binary_search_by(|s| s.as_str().cmp(addr)) {
+            Ok(pos) => pos,
             Err(_) => return,
-        }
+        };
+        let mut servers = old.servers.clone();
+        servers.remove(pos);
         let table = rebuild_table(&servers);
         let len = servers.len();
         *self.snapshot.write() = Arc::new(Snapshot { servers, table });

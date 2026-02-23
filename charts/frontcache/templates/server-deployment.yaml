@@ -31,6 +31,18 @@ spec:
             - name: grpc
               containerPort: 8080
               protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 2
           env:
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}

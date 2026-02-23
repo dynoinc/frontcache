@@ -20,6 +20,52 @@ pub struct K8sMembership {
     port: u16,
 }
 
+struct PodInfo {
+    name: String,
+    ip: Option<String>,
+    addr: Option<String>,
+    ready: bool,
+    terminating: bool,
+}
+
+fn pod_info(pod: &Pod, port: u16) -> PodInfo {
+    let name = pod
+        .metadata
+        .name
+        .clone()
+        .unwrap_or_else(|| "<unknown>".into());
+    let terminating = pod.metadata.deletion_timestamp.is_some();
+    let ip = pod.status.as_ref().and_then(|s| s.pod_ip.clone());
+    let ready = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|conds| {
+            conds
+                .iter()
+                .find(|c| c.type_ == "Ready")
+                .map(|c| c.status == "True")
+        })
+        .unwrap_or(false);
+    let addr = ip.as_ref().map(|ip| format!("{ip}:{port}"));
+    PodInfo {
+        name,
+        ip,
+        addr,
+        ready,
+        terminating,
+    }
+}
+
+/// A pod is eligible for the ring when it has an IP, is Ready, and not terminating.
+fn eligible_addr(info: &PodInfo) -> Option<&str> {
+    if info.ready && !info.terminating {
+        info.addr.as_deref()
+    } else {
+        None
+    }
+}
+
 impl K8sMembership {
     pub async fn new(label_selector: String, port: u16) -> Result<Self> {
         let client = Client::try_default().await?;
@@ -52,17 +98,38 @@ impl K8sMembership {
             };
             match event {
                 Event::Apply(pod) => {
-                    if let Some(ip) = pod.status.and_then(|s| s.pod_ip) {
-                        let addr = format!("{}:{}", ip, self.port);
-                        tracing::info!("Adding node: {}", addr);
-                        ring.add_node(addr);
+                    let info = pod_info(&pod, self.port);
+                    if let Some(addr) = eligible_addr(&info) {
+                        tracing::info!(
+                            pod = %info.name, ip = ?info.ip,
+                            ready = info.ready, terminating = info.terminating,
+                            action = "add", "Ring membership change"
+                        );
+                        ring.add_node(addr.to_owned());
+                    } else if let Some(addr) = &info.addr {
+                        tracing::info!(
+                            pod = %info.name, ip = ?info.ip,
+                            ready = info.ready, terminating = info.terminating,
+                            action = "remove", "Ring membership change"
+                        );
+                        ring.remove_node(addr);
+                    } else {
+                        tracing::info!(
+                            pod = %info.name, ip = ?info.ip,
+                            ready = info.ready, terminating = info.terminating,
+                            action = "skip", "No IP, skipping"
+                        );
                     }
                 }
                 Event::Delete(pod) => {
-                    if let Some(ip) = pod.status.and_then(|s| s.pod_ip) {
-                        let addr = format!("{}:{}", ip, self.port);
-                        tracing::info!("Removing node: {}", addr);
-                        ring.remove_node(&addr);
+                    let info = pod_info(&pod, self.port);
+                    if let Some(addr) = &info.addr {
+                        tracing::info!(
+                            pod = %info.name, ip = ?info.ip,
+                            ready = info.ready, terminating = info.terminating,
+                            action = "remove", "Pod deleted"
+                        );
+                        ring.remove_node(addr);
                     }
                 }
                 Event::Init => {
@@ -70,12 +137,22 @@ impl K8sMembership {
                     init_buf = Some(Vec::new());
                 }
                 Event::InitApply(pod) => {
-                    if let Some(ip) = pod.status.and_then(|s| s.pod_ip) {
-                        let addr = format!("{}:{}", ip, self.port);
-                        tracing::info!("Init adding node: {}", addr);
+                    let info = pod_info(&pod, self.port);
+                    if let Some(addr) = eligible_addr(&info) {
+                        tracing::info!(
+                            pod = %info.name, ip = ?info.ip,
+                            ready = info.ready, terminating = info.terminating,
+                            action = "init_add", "Init buffering eligible pod"
+                        );
                         if let Some(buf) = &mut init_buf {
-                            buf.push(addr);
+                            buf.push(addr.to_owned());
                         }
+                    } else {
+                        tracing::info!(
+                            pod = %info.name, ip = ?info.ip,
+                            ready = info.ready, terminating = info.terminating,
+                            action = "init_skip", "Init skipping ineligible pod"
+                        );
                     }
                 }
                 Event::InitDone => {
