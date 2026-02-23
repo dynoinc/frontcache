@@ -34,8 +34,14 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: OTEL_SERVICE_NAME
               value: "frontcache_server"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.instance.id=$(POD_NAME)"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
             - name: AWS_ACCESS_KEY_ID
