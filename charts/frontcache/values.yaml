@@ -18,9 +18,15 @@ server:
   listen: "0.0.0.0:8080"
   cacheDirs:
     - /data/cache
+  cacheSizeLimit: 50Mi
   service:
     type: ClusterIP
     port: 8080
+
+loadgen:
+  fileCount: 10
+  fileSizeMB: 50
+  sleepSeconds: "0.1"
 
 minio:
   rootUser: minioadmin

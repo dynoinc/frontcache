@@ -11,23 +11,26 @@ data:
     import frontcache
 
     ROUTER = "http://{{ include "frontcache.fullname" . }}-router:{{ .Values.router.service.port }}"
-    FILES = [f"s3://test/file{i}.bin" for i in range(1, 6)]
+    FILE_COUNT = {{ .Values.loadgen.fileCount }}
+    FILE_SIZE = {{ .Values.loadgen.fileSizeMB }} * 1024 * 1024
+    SLEEP = {{ .Values.loadgen.sleepSeconds }}
+    FILES = [f"s3://test/file{i}.bin" for i in range(1, FILE_COUNT + 1)]
 
     async def main():
         print(f"Connecting to {ROUTER}")
         client = await frontcache.connect(ROUTER)
-        print("Connected, starting load generation")
+        print(f"Connected, {FILE_COUNT} files x {FILE_SIZE} bytes, sleep={SLEEP}s")
         i = 0
         while True:
             for f in FILES:
-                offset = (i * 4096) % 1048576
+                offset = (i * 4096) % FILE_SIZE
                 try:
                     async for chunk in client.stream_range(f, offset=offset, length=4096, version="v1"):
                         pass
                 except Exception as e:
                     print(f"Error reading {f} offset={offset}: {e}")
                 i += 1
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(SLEEP)
 
     asyncio.run(main())
 ---
@@ -64,9 +67,9 @@ spec:
               {{- range .Values.minio.buckets }}
               mc mb --ignore-existing local/{{ . }}
               {{- end }}
-              for i in 1 2 3 4 5; do
-                echo "Seeding test/file${i}.bin (1MB)..."
-                head -c 1048576 /dev/urandom > /tmp/file${i}.bin
+              for i in $(seq 1 {{ .Values.loadgen.fileCount }}); do
+                echo "Seeding test/file${i}.bin ({{ .Values.loadgen.fileSizeMB }}MB)..."
+                head -c $(( {{ .Values.loadgen.fileSizeMB }} * 1048576 )) /dev/urandom > /tmp/file${i}.bin
                 mc cp --attr "x-frontcache-version=v1" /tmp/file${i}.bin local/test/file${i}.bin
               done
               echo "Seeding complete."

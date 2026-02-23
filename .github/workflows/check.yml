@@ -81,7 +81,9 @@ jobs:
       run: cargo build --release -p frontcache-server -p frontcache-router
 
     - name: Build AMD64 wheel
-      run: cd py && uv run maturin build --release
+      run: |
+        rm -f target/wheels/frontcache-*linux*.whl
+        cd py && uv run maturin build --release
 
     - name: Copy binaries and wheel
       run: |
@@ -144,7 +146,9 @@ jobs:
     - name: Build ARM64 wheel
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      run: cd py && uv run maturin build --release --target aarch64-unknown-linux-gnu -i python3.12
+      run: |
+        rm -f target/wheels/frontcache-*linux*.whl
+        cd py && uv run maturin build --release --target aarch64-unknown-linux-gnu -i python3.12
 
     - name: Copy binaries and wheel
       run: |

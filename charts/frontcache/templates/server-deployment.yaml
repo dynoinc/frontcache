@@ -69,5 +69,6 @@ spec:
       volumes:
         {{- range $i, $dir := .Values.server.cacheDirs }}
         - name: cache-{{ $i }}
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ $.Values.server.cacheSizeLimit }}
         {{- end }}
