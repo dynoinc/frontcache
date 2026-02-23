@@ -320,7 +320,7 @@ data:
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(rpc_duration_seconds_count[5m])) by (rpc_method, rpc_grpc_status)",
+              "expr": "sum(rate(rpc_duration_seconds_count{exported_job=\"frontcache_client\"}[5m])) by (rpc_method, rpc_grpc_status)",
               "legendFormat": "{{`{{rpc_method}}`}} / {{`{{rpc_grpc_status}}`}}",
               "range": true,
               "refId": "A"
@@ -360,7 +360,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_seconds_bucket[5m])) by (le, rpc_method))",
+              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_seconds_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, rpc_method))",
               "legendFormat": "{{`{{rpc_method}}`}}",
               "refId": "A"
             }
@@ -399,7 +399,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_seconds_bucket[5m])) by (le, rpc_method))",
+              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_seconds_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, rpc_method))",
               "legendFormat": "{{`{{rpc_method}}`}}",
               "refId": "A"
             }

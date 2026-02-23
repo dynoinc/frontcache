@@ -16,4 +16,6 @@ check:
 # Build docker image for local k8s testing (debug, cross-compiled for Linux)
 docker-build:
     cargo zigbuild --target aarch64-unknown-linux-gnu -p frontcache-server -p frontcache-router
+    cd py && uv run maturin build --target aarch64-unknown-linux-gnu --zig -i python3.12
+    cp target/wheels/frontcache-*linux*.whl target/aarch64-unknown-linux-gnu/debug/
     docker build -f Dockerfile -t frontcache:dev target/aarch64-unknown-linux-gnu/debug/

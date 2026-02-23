@@ -1,43 +1,35 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "frontcache.fullname" . }}-loadgen-proto
+  name: {{ include "frontcache.fullname" . }}-loadgen-script
   labels:
     {{- include "frontcache.labels" . | nindent 4 }}
     app.kubernetes.io/component: loadgen
 data:
-  cache.proto: |
-    syntax = "proto3";
+  loadgen.py: |
+    import asyncio
+    import frontcache
 
-    package cache;
+    ROUTER = "http://{{ include "frontcache.fullname" . }}-router:{{ .Values.router.service.port }}"
+    FILES = [f"s3://test/file{i}.bin" for i in range(1, 6)]
 
-    service RouterService {
-      rpc LookupOwner(LookupOwnerRequest) returns (LookupOwnerResponse);
-    }
+    async def main():
+        print(f"Connecting to {ROUTER}")
+        client = await frontcache.connect(ROUTER)
+        print("Connected, starting load generation")
+        i = 0
+        while True:
+            for f in FILES:
+                offset = (i * 4096) % 1048576
+                try:
+                    async for chunk in client.stream_range(f, offset=offset, length=4096, version="v1"):
+                        pass
+                except Exception as e:
+                    print(f"Error reading {f} offset={offset}: {e}")
+                i += 1
+                await asyncio.sleep(0.5)
 
-    service CacheService {
-      rpc ReadRange(ReadRangeRequest) returns (stream ReadRangeResponse);
-    }
-
-    message LookupOwnerRequest {
-      string key = 1;
-      uint64 offset = 2;
-    }
-
-    message LookupOwnerResponse {
-      string addr = 1;
-    }
-
-    message ReadRangeRequest {
-      string key = 1;
-      uint64 offset = 2;
-      uint64 length = 3;
-      string version = 4;
-    }
-
-    message ReadRangeResponse {
-      bytes data = 1;
-    }
+    asyncio.run(main())
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -80,42 +72,24 @@ spec:
               echo "Seeding complete."
       containers:
         - name: loadgen
-          image: alpine:3.21
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -e
-              apk add --no-cache curl
-              ARCH=$(uname -m); case $ARCH in aarch64) ARCH=arm64;; x86_64) ARCH=x86_64;; esac
-              curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.2/grpcurl_1.9.2_linux_${ARCH}.tar.gz" | tar xz -C /usr/local/bin grpcurl
-              set +e
-
-              ROUTER={{ include "frontcache.fullname" . }}-router:{{ .Values.router.service.port }}
-              SERVER={{ include "frontcache.fullname" . }}-server:{{ .Values.server.service.port }}
-              FILES="file1.bin file2.bin file3.bin file4.bin file5.bin"
-              i=0
-              while true; do
-                for f in $FILES; do
-                  KEY="s3://test/${f}"
-                  VERSION="v1"
-                  OFFSET=$(( (i * 4096) % 1048576 ))
-                  echo "--- LookupOwner key=$KEY ---"
-                  grpcurl -plaintext -import-path /proto -proto cache.proto \
-                    -d "{\"key\":\"$KEY\",\"offset\":$OFFSET}" \
-                    "$ROUTER" cache.RouterService/LookupOwner || true
-                  echo "--- ReadRange key=$KEY offset=$OFFSET len=4096 ---"
-                  grpcurl -plaintext -import-path /proto -proto cache.proto \
-                    -d "{\"key\":\"$KEY\",\"offset\":$OFFSET,\"length\":4096,\"version\":\"$VERSION\"}" \
-                    "$SERVER" cache.CacheService/ReadRange || true
-                  i=$((i + 1))
-                  sleep 0.5
-                done
-              done
+          image: {{ include "frontcache.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python3", "-u", "/scripts/loadgen.py"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_SERVICE_NAME
+              value: "frontcache_client"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.instance.id=$(POD_NAME)"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
           volumeMounts:
-            - name: proto
-              mountPath: /proto
+            - name: scripts
+              mountPath: /scripts
       volumes:
-        - name: proto
+        - name: scripts
           configMap:
-            name: {{ include "frontcache.fullname" . }}-loadgen-proto
+            name: {{ include "frontcache.fullname" . }}-loadgen-script
