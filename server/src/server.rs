@@ -95,6 +95,9 @@ impl CacheService for CacheServer {
         }
 
         let chunk_end = block_len.min(offset_in_block + length as usize);
+        frontcache_metrics::get()
+            .bytes_served
+            .add((chunk_end - offset_in_block) as u64, &[]);
 
         let stream = futures_util::stream::unfold(
             (block, offset_in_block),

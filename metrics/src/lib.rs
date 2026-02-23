@@ -26,6 +26,9 @@ pub struct Metrics {
     pub disk_total_bytes: Gauge<f64>,
     pub ring_members: Gauge<u64>,
     pub ring_member_changes: Counter<u64>,
+    pub bytes_served: Counter<u64>,
+    pub blocks_total: Gauge<u64>,
+    pub block_changes: Counter<u64>,
 }
 
 pub fn init() {
@@ -90,6 +93,18 @@ pub fn init() {
         ring_member_changes: meter
             .u64_counter("ring_member_changes")
             .with_description("Number of members added or removed from the hash ring")
+            .build(),
+        bytes_served: meter
+            .u64_counter("bytes_served")
+            .with_description("Total bytes served to clients")
+            .build(),
+        blocks_total: meter
+            .u64_gauge("blocks_total")
+            .with_description("Current number of cached blocks")
+            .build(),
+        block_changes: meter
+            .u64_counter("block_changes")
+            .with_description("Blocks added or removed from cache")
             .build(),
     });
 }

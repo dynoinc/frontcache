@@ -66,6 +66,10 @@ impl Cache {
         &self.disks
     }
 
+    pub fn block_count(&self) -> usize {
+        self.states.len()
+    }
+
     pub async fn init_from_disk(&self) -> Result<()> {
         let mut cleanup_keys = Vec::new();
 
@@ -158,6 +162,8 @@ impl Cache {
                                 block: block.clone(),
                             },
                         );
+                        let m = frontcache_metrics::get();
+                        m.block_changes.add(1, &[KeyValue::new("action", "added")]);
                     }
                     Err(_) => {
                         self.states.remove(&key);
@@ -294,6 +300,10 @@ impl Cache {
         }
 
         self.index.delete_many(&keys)?;
+
+        let m = frontcache_metrics::get();
+        m.block_changes
+            .add(keys.len() as u64, &[KeyValue::new("action", "removed")]);
 
         Ok(())
     }

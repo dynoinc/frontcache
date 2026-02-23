@@ -91,6 +91,7 @@ pub fn start_purger(cache: Arc<Cache>) {
             let m = frontcache_metrics::get();
             m.disk_total_bytes.record(total_bytes as f64, &[]);
             m.disk_available_bytes.record(available_bytes as f64, &[]);
+            m.blocks_total.record(cache.block_count() as u64, &[]);
         }
     });
 }
