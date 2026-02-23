@@ -23,7 +23,8 @@ message ReadRangeRequest {
   string key = 1;
   uint64 offset = 2;
   uint64 length = 3;
-  optional string version = 4;  // omit for immutable objects to skip version check
+  // version check: omit to skip, checked against x-frontcache-version if present, else etag
+  optional string version = 4;
 }
 
 message ReadRangeResponse {

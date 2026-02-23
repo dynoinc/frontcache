@@ -4,7 +4,7 @@ use parking_lot::RwLock;
 use rayon::prelude::*;
 use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 
-const NUM_VPARTITIONS: usize = 1 << 18; // 262,144
+const NUM_VPARTITIONS: usize = 1 << 18;
 const VP_MASK: u64 = NUM_VPARTITIONS as u64 - 1;
 
 struct Snapshot {
@@ -12,8 +12,10 @@ struct Snapshot {
     table: Vec<u16>,
 }
 
-/// Future extensions: weighted servers (ln(h/MAX)/weight), replication (top-K),
-/// incremental rebuild on single-server changes.
+/// Future extensions:
+/// - Weighted servers (ln(h/MAX)/weight)
+/// - Replication (top-K)
+/// - Incremental rebuild on single-server changes
 pub struct Straw2Router {
     snapshot: RwLock<Arc<Snapshot>>,
 }
