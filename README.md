@@ -7,7 +7,7 @@ Distributed pull-through cache for object storage (S3/GCS).
 - Block-based caching with 16MB fixed blocks
 - Straw2 hashing for distributed block ownership
 - Kubernetes auto-discovery
-- Memory-mapped zero-copy reads
+- Aligned direct I/O reads
 - OpenTelemetry metrics for observability
 
 ## Architecture
@@ -34,7 +34,7 @@ Clients talk to the router to discover which server owns a block, then read dire
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | `0.0.0.0:8080` | Address to listen on |
-| `--cache-dirs` | `/tmp/frontcache` | Cache directories (comma-separated for multiple) |
+| `--cache-dirs` | `/tmp/frontcache:1GiB` | Cache directories with sizes (`path:size`, comma-separated for multiple) |
 
 ### Environment Variables
 

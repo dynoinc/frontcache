@@ -11,7 +11,7 @@ use futures_util::Stream;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
-    cache::{BLOCK_SIZE, Cache, CacheError},
+    cache::{BLOCK_SIZE, Cache, CacheError, CacheHit},
     store::StoreError,
 };
 
@@ -59,7 +59,7 @@ impl CacheService for CacheServer {
         let offset = req.offset;
         let length = req.length;
 
-        let block = self.cache.get(&req.key, offset).await.map_err(|e| {
+        let hit = self.cache.get(&req.key, offset).await.map_err(|e| {
             let msg = format!("{:?}", e);
             match &e {
                 CacheError::StoreRead(store_err) => match store_err.as_ref() {
@@ -74,18 +74,18 @@ impl CacheService for CacheServer {
         })?;
 
         if let Some(version) = &req.version
-            && block.version() != version
+            && hit.version() != version
         {
             return Err(Status::failed_precondition(format!(
                 "version mismatch: cached={}, requested={}",
-                block.version(),
+                hit.version(),
                 version
             )));
         }
 
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let offset_in_block = (offset - block_offset) as usize;
-        let block_len = block.data().len();
+        let block_len = hit.size() as usize;
 
         if offset_in_block >= block_len {
             return Err(Status::out_of_range(format!(
@@ -99,23 +99,46 @@ impl CacheService for CacheServer {
             .bytes_served
             .add((chunk_end - offset_in_block) as u64, &[]);
 
-        let stream = futures_util::stream::unfold(
-            (block, offset_in_block),
-            move |(block, chunk_start)| async move {
-                if chunk_start >= chunk_end {
-                    return None;
+        let stream: Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>> =
+            match hit {
+                CacheHit::Disk { reader, .. } => Box::pin(futures_util::stream::try_unfold(
+                    (reader, offset_in_block),
+                    move |(reader, pos)| async move {
+                        if pos >= chunk_end {
+                            return Ok(None);
+                        }
+                        let len = CHUNK_SIZE.min(chunk_end - pos);
+                        let chunk = reader
+                            .read_chunk(pos as u64, len)
+                            .await
+                            .map_err(|e| Status::internal(format!("read_chunk: {e}")))?;
+                        let chunk_len = chunk.len();
+                        if chunk_len != len {
+                            return Err(Status::data_loss(format!(
+                                "short read at offset {pos}: expected {len} bytes, got {chunk_len}"
+                            )));
+                        }
+                        Ok(Some((
+                            ReadRangeResponse { data: chunk },
+                            (reader, pos + chunk_len),
+                        )))
+                    },
+                )),
+                CacheHit::Fresh { data, .. } => {
+                    Box::pin(futures_util::stream::unfold(offset_in_block, move |pos| {
+                        let data = data.clone();
+                        async move {
+                            if pos >= chunk_end {
+                                return None;
+                            }
+                            let len = CHUNK_SIZE.min(chunk_end - pos);
+                            let chunk = data.slice(pos..pos + len);
+                            Some((Ok(ReadRangeResponse { data: chunk }), pos + len))
+                        }
+                    }))
                 }
-                let chunk_size = CHUNK_SIZE.min(chunk_end - chunk_start);
-                let chunk = bytes::Bytes::copy_from_slice(
-                    &block.data()[chunk_start..chunk_start + chunk_size],
-                );
-                Some((
-                    Ok(ReadRangeResponse { data: chunk }),
-                    (block, chunk_start + chunk_size),
-                ))
-            },
-        );
+            };
 
-        Ok(Response::new(Box::pin(stream)))
+        Ok(Response::new(stream))
     }
 }

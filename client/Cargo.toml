@@ -13,3 +13,4 @@ dashmap = { workspace = true }
 futures = { workspace = true }
 tokio-retry2 = { workspace = true }
 tower = { workspace = true }
+tracing = { workspace = true }

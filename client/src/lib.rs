@@ -27,10 +27,16 @@ struct ClientConfig {
 }
 
 fn env_or<T: FromStr>(name: &str, default: T) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    match std::env::var(name) {
+        Ok(v) => match v.parse() {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                tracing::warn!("Invalid value '{}' for {}, using default", v, name);
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 impl ClientConfig {
@@ -69,10 +75,7 @@ impl CacheClient {
         let config = ClientConfig::from_env();
         frontcache_metrics::init();
 
-        let channel = Channel::from_shared(router_addr)?
-            .timeout(config.lookup_timeout)
-            .connect()
-            .await?;
+        let channel = Channel::from_shared(router_addr)?.connect().await?;
         let channel = ServiceBuilder::new()
             .layer(frontcache_metrics::layer())
             .service(channel);
@@ -146,20 +149,26 @@ impl CacheClient {
         read_len: u64,
         version: Option<String>,
     ) -> Result<ByteStream> {
-        let owner = self.lookup_owner(&key, block_offset).await?;
-        let client = self.get_or_create_cache_connection(&owner).await?;
-
         let strategy = ExponentialBackoff::from_millis(100)
             .factor(2)
             .max_delay(Duration::from_secs(1))
             .take(self.config.max_retries);
 
+        let client = self.clone();
         let read_timeout = self.config.read_timeout;
         let response = Retry::spawn(strategy, || {
-            let mut client = client.clone();
+            let client = client.clone();
             let key = key.clone();
             let version = version.clone();
             async move {
+                let owner = client
+                    .lookup_owner(&key, block_offset)
+                    .await
+                    .map_err(RetryError::transient)?;
+                let mut cache_client = client
+                    .get_or_create_cache_connection(&owner)
+                    .await
+                    .map_err(RetryError::transient)?;
                 let mut req = tonic::Request::new(ReadRangeRequest {
                     key,
                     offset: read_offset,
@@ -167,7 +176,7 @@ impl CacheClient {
                     version,
                 });
                 req.set_timeout(read_timeout);
-                let stream = client
+                let stream = cache_client
                     .read_range(req)
                     .await
                     .map_err(|s| {
@@ -202,14 +211,13 @@ impl CacheClient {
             .take(self.config.max_retries);
 
         let router = self.router.clone();
-        let req = LookupOwnerRequest {
-            key: key.to_string(),
-            offset: block_offset,
-        };
-
         let resp = Retry::spawn(strategy, || {
             let mut router = router.clone();
-            let req = req.clone();
+            let mut req = tonic::Request::new(LookupOwnerRequest {
+                key: key.to_string(),
+                offset: block_offset,
+            });
+            req.set_timeout(self.config.lookup_timeout);
             async move {
                 router.lookup_owner(req).await.map_err(|s| {
                     if is_retryable(s.code()) {

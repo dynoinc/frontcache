@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
     let store = Arc::new(Store::new());
     let cache = Arc::new(Cache::new(index.clone(), store, disks));
 
-    cache.init_from_disk().await?;
+    cache.init_from_disk()?;
     start_purger(cache.clone());
     start_flusher(cache.clone());
 

@@ -87,7 +87,10 @@ spec:
           emptyDir: {}
         {{- range $i, $dir := .Values.server.cacheDirs }}
         - name: cache-{{ $i }}
+          {{- if $dir.k8sSizeLimit }}
           emptyDir:
-            medium: Memory
             sizeLimit: {{ $dir.k8sSizeLimit }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         {{- end }}

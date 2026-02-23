@@ -17,7 +17,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
-memmap2 = { workspace = true }
+libc = { workspace = true }
+rayon = { workspace = true }
 redb = { workspace = true }
 short-uuid = { workspace = true }
 tempfile = { workspace = true }
