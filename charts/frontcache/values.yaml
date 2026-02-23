@@ -17,8 +17,9 @@ router:
 server:
   listen: "0.0.0.0:8080"
   cacheDirs:
-    - /data/cache
-  cacheSizeLimit: 50Mi
+    - path: /data/cache
+      size: 200MiB
+      k8sSizeLimit: 250Mi
   service:
     type: ClusterIP
     port: 8080

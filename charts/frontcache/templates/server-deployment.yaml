@@ -24,7 +24,9 @@ spec:
             - "--listen"
             - {{ .Values.server.listen | quote }}
             - "--cache-dirs"
-            - {{ join "," .Values.server.cacheDirs | quote }}
+            - {{ range $i, $dir := .Values.server.cacheDirs }}{{ if $i }},{{ end }}{{ $dir.path }}:{{ $dir.size }}{{ end }}
+            - "--index-path"
+            - "/var/lib/frontcache/index.db"
           ports:
             - name: grpc
               containerPort: 8080
@@ -58,17 +60,22 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           volumeMounts:
+            - name: index
+              mountPath: /var/lib/frontcache
             {{- range $i, $dir := .Values.server.cacheDirs }}
             - name: cache-{{ $i }}
-              mountPath: {{ $dir }}
+              mountPath: {{ $dir.path }}
             {{- end }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        - name: index
+          emptyDir: {}
         {{- range $i, $dir := .Values.server.cacheDirs }}
         - name: cache-{{ $i }}
           emptyDir:
-            sizeLimit: {{ $.Values.server.cacheSizeLimit }}
+            medium: Memory
+            sizeLimit: {{ $dir.k8sSizeLimit }}
         {{- end }}

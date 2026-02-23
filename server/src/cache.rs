@@ -1,10 +1,8 @@
 use std::time::Instant;
 
-use anyhow::bail;
 use dashmap::{DashMap, DashSet, mapref::entry::Entry};
 use futures_util::future::{FutureExt, Shared};
 use opentelemetry::KeyValue;
-use short_uuid::ShortUuid;
 use thiserror::Error;
 use tokio::sync::oneshot;
 
@@ -14,9 +12,9 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use crate::{
-    block::Block,
+    block::{Block, PendingBlock},
     disk::{Disk, select_disk},
-    index::{BlockEntry, BlockKey, BlockState, Index, IndexError},
+    index::{BlockEntry, BlockKey, Index, IndexError},
     store::{Store, StoreError},
 };
 
@@ -74,29 +72,36 @@ impl Cache {
         let mut cleanup_keys = Vec::new();
 
         for (block_key, record) in self.index.list_all()? {
-            match record.entry.state {
-                BlockState::Writing | BlockState::Purging => {
-                    tracing::warn!("Found incomplete operation, cleaning up: {:?}", block_key);
-                    let block_path = PathBuf::from(&record.entry.path);
-                    let _ = tokio::fs::remove_file(&block_path).await;
-                    cleanup_keys.push(block_key);
-                }
-                BlockState::Downloaded => {
-                    let block_path = PathBuf::from(&record.entry.path);
-                    if !block_path.exists() {
-                        bail!("Block {:?} in index is missing from disk", block_key);
-                    }
-                    let last_accessed = record.last_accessed.unwrap_or_else(Block::now);
-                    let block =
-                        Block::from_disk(block_path, record.entry.version.clone(), last_accessed)?;
-                    self.states.insert(
-                        block_key,
-                        CacheState::Ready {
-                            block: Arc::new(block),
-                        },
-                    );
+            let block_path = PathBuf::from(&record.entry.path);
+            if !block_path.exists() {
+                tracing::warn!(
+                    "Block {:?} in index is missing from disk, cleaning up",
+                    block_key
+                );
+                cleanup_keys.push(block_key);
+                continue;
+            }
+            let last_accessed = record.last_accessed.unwrap_or_else(Block::now);
+            let block = Block::from_disk(
+                block_path.clone(),
+                record.entry.version.clone(),
+                record.entry.size,
+                last_accessed,
+            )?;
+
+            for disk in &self.disks {
+                if block_path.starts_with(disk.path()) {
+                    disk.add_used(record.entry.size);
+                    break;
                 }
             }
+
+            self.states.insert(
+                block_key,
+                CacheState::Ready {
+                    block: Arc::new(block),
+                },
+            );
         }
 
         if !cleanup_keys.is_empty() {
@@ -149,9 +154,7 @@ impl Cache {
                     result: result.clone(),
                 });
 
-                let short_id = ShortUuid::generate();
-                let block_filename = format!("{}.blk", short_id);
-                let download_result = self.download_block(&key, &block_filename).await;
+                let download_result = self.download_block(&key).await;
                 let shared_result = Arc::new(download_result);
 
                 match shared_result.as_ref() {
@@ -183,15 +186,10 @@ impl Cache {
         }
     }
 
-    async fn download_block(
-        &self,
-        key: &BlockKey,
-        block_filename: &str,
-    ) -> Result<Arc<Block>, CacheError> {
+    async fn download_block(&self, key: &BlockKey) -> Result<Arc<Block>, CacheError> {
         tracing::info!("Downloading block {key:?}");
 
-        let cache_dir = select_disk(&self.disks);
-        let block_path = cache_dir.join(block_filename);
+        let disk = select_disk(&self.disks);
 
         let (object_key, offset) = key;
         let read_result = match self.store.read_range(object_key, *offset, BLOCK_SIZE).await {
@@ -201,45 +199,36 @@ impl Cache {
             }
         };
 
-        self.index
-            .upsert([(
-                key.clone(),
-                BlockEntry {
-                    path: block_path.to_string_lossy().to_string(),
-                    state: BlockState::Writing,
-                    version: read_result.version.clone(),
-                },
-            )])
-            .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
-
-        let block = match Block::new(
-            block_path.clone(),
-            read_result.data,
-            read_result.version.clone(),
-        )
-        .await
-        {
-            Ok(block) => block,
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&block_path).await;
-                let _ = self.index.delete(key);
-                return Err(CacheError::CreateFile(Arc::new(e)));
-            }
-        };
+        let pending =
+            match PendingBlock::prepare(disk.path(), read_result.data, read_result.version.clone())
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    return Err(CacheError::CreateFile(Arc::new(e)));
+                }
+            };
 
         if let Err(e) = self.index.upsert([(
             key.clone(),
             BlockEntry {
-                path: block_path.to_string_lossy().to_string(),
-                state: BlockState::Downloaded,
+                path: pending.path().to_string_lossy().to_string(),
                 version: read_result.version,
+                size: pending.size(),
             },
         )]) {
-            let _ = tokio::fs::remove_file(block.path()).await;
-            let _ = self.index.delete(key);
             return Err(CacheError::IndexUpdate(Arc::new(e)));
         }
 
+        let block = match pending.persist() {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = self.index.delete_many(std::slice::from_ref(key));
+                return Err(CacheError::CreateFile(Arc::new(e)));
+            }
+        };
+
+        disk.add_used(block.size());
         self.dirty.insert(key.clone());
         Ok(Arc::new(block))
     }
@@ -256,7 +245,7 @@ impl Cache {
                     ts,
                     entry.key().clone(),
                     block.path().to_path_buf(),
-                    block.version().to_string(),
+                    block.size(),
                 );
 
                 if heap.len() < count {
@@ -274,18 +263,6 @@ impl Cache {
             return Ok(());
         }
 
-        self.index
-            .upsert(victims.iter().map(|(_, key, path, version)| {
-                (
-                    key.clone(),
-                    BlockEntry {
-                        path: path.to_string_lossy().to_string(),
-                        state: BlockState::Purging,
-                        version: version.clone(),
-                    },
-                )
-            }))?;
-
         let keys: Vec<BlockKey> = victims.iter().map(|(_, key, _, _)| key.clone()).collect();
 
         for key in &keys {
@@ -294,12 +271,23 @@ impl Cache {
         }
 
         for (_, _, path, _) in &victims {
-            tokio::fs::remove_file(path)
-                .await
-                .expect("failed to remove block file");
+            if let Err(e) = tokio::fs::remove_file(path).await {
+                tracing::error!("Failed to remove block file {:?}: {}", path, e);
+            }
         }
 
         self.index.delete_many(&keys)?;
+
+        for disk in &self.disks {
+            let freed: u64 = victims
+                .iter()
+                .filter(|(_, _, path, _)| path.starts_with(disk.path()))
+                .map(|(_, _, _, size)| size)
+                .sum();
+            if freed > 0 {
+                disk.sub_used(freed);
+            }
+        }
 
         let m = frontcache_metrics::get();
         m.block_changes

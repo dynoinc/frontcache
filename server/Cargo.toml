@@ -20,10 +20,10 @@ parking_lot = { workspace = true }
 memmap2 = { workspace = true }
 redb = { workspace = true }
 short-uuid = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 object_store = { workspace = true }
 clap = { workspace = true }
-nix = { workspace = true }
 tikv-jemallocator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

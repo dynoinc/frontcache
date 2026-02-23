@@ -30,18 +30,11 @@ pub type BlockKey = (String, u64);
 const BLOCKS_TABLE: TableDefinition<BlockKey, &[u8]> = TableDefinition::new("blocks");
 const LAST_ACCESSED_TABLE: TableDefinition<BlockKey, u64> = TableDefinition::new("last_accessed");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BlockState {
-    Writing,
-    Downloaded,
-    Purging,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockEntry {
     pub path: String,
-    pub state: BlockState,
     pub version: String,
+    pub size: u64,
 }
 
 pub struct Index {
@@ -74,18 +67,6 @@ impl Index {
                 let value = serde_json::to_vec(&entry)?;
                 table.insert((object, offset), value.as_slice())?;
             }
-        }
-        write_txn.commit()?;
-        Ok(())
-    }
-
-    pub fn delete(&self, key: &BlockKey) -> Result<(), IndexError> {
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut blocks = write_txn.open_table(BLOCKS_TABLE)?;
-            let mut last_accessed = write_txn.open_table(LAST_ACCESSED_TABLE)?;
-            blocks.remove(key)?;
-            last_accessed.remove(key)?;
         }
         write_txn.commit()?;
         Ok(())

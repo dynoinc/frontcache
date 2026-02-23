@@ -685,7 +685,6 @@ dependencies = [
  "frontcache-proto",
  "futures-util",
  "memmap2",
- "nix",
  "object_store",
  "opentelemetry",
  "parking_lot",
@@ -694,6 +693,7 @@ dependencies = [
  "serde",
  "serde_json",
  "short-uuid",
+ "tempfile",
  "thiserror 2.0.18",
  "tikv-jemallocator",
  "tokio",
@@ -1538,18 +1538,6 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-
-[[package]]
-name = "nix"
-version = "0.31.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "225e7cfe711e0ba79a68baeddb2982723e4235247aefce1482f2f16c27865b66"
-dependencies = [
- "bitflags",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
 
 [[package]]
 name = "nu-ansi-term"

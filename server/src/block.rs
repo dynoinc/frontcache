@@ -1,48 +1,93 @@
 use std::{
+    io::Write,
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
 use memmap2::Mmap;
-use tokio::io::AsyncWriteExt;
+use short_uuid::ShortUuid;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use anyhow::Result;
+
+pub struct PendingBlock {
+    tmp: tempfile::NamedTempFile,
+    path: PathBuf,
+    version: String,
+    size: u64,
+}
+
+impl PendingBlock {
+    pub async fn prepare(cache_dir: &Path, data: Bytes, version: String) -> Result<Self> {
+        let id = ShortUuid::generate().to_string();
+        let prefix = &id[..2];
+        let filename = format!("{}.blk", id);
+
+        let final_dir = cache_dir.join(prefix);
+        tokio::fs::create_dir_all(&final_dir).await?;
+
+        let tmp = tempfile::NamedTempFile::new_in(cache_dir.join("tmp"))?;
+        let size = data.len() as u64;
+        let path = final_dir.join(&filename);
+
+        let tmp = tokio::task::spawn_blocking(move || -> Result<tempfile::NamedTempFile> {
+            let mut file = tmp;
+            file.as_file().set_len(size)?;
+            file.write_all(&data)?;
+            file.as_file().sync_all()?;
+            Ok(file)
+        })
+        .await??;
+
+        Ok(Self {
+            tmp,
+            path,
+            version,
+            size,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn persist(self) -> Result<Block> {
+        self.tmp.persist(&self.path)?;
+        let file = std::fs::OpenOptions::new().read(true).open(&self.path)?;
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+
+        Ok(Block {
+            path: self.path,
+            mmap,
+            version: self.version,
+            size: self.size,
+            last_accessed: AtomicU64::new(Block::now()),
+        })
+    }
+}
 
 pub struct Block {
     path: PathBuf,
     mmap: Mmap,
     version: String,
+    size: u64,
     last_accessed: AtomicU64,
 }
 
 impl Block {
-    pub async fn new(path: PathBuf, data: Bytes, version: String) -> Result<Self> {
-        let mut file = tokio::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await?;
-
-        file.set_len(data.len() as u64).await?;
-        file.write_all(&data).await?;
-        file.sync_all().await?;
-
-        let std_file = file.into_std().await;
-        let mmap = unsafe { memmap2::MmapOptions::new().map(&std_file)? };
-
-        Ok(Self {
-            path,
-            mmap,
-            version,
-            last_accessed: AtomicU64::new(Self::now()),
-        })
-    }
-
-    pub fn from_disk(path: PathBuf, version: String, last_accessed: u64) -> Result<Self> {
+    pub fn from_disk(
+        path: PathBuf,
+        version: String,
+        size: u64,
+        last_accessed: u64,
+    ) -> Result<Self> {
         let file = std::fs::OpenOptions::new().read(true).open(&path)?;
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
@@ -50,6 +95,7 @@ impl Block {
             path,
             mmap,
             version,
+            size,
             last_accessed: AtomicU64::new(last_accessed),
         })
     }
@@ -64,6 +110,10 @@ impl Block {
 
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
     }
 
     pub fn record_access(&self) {
