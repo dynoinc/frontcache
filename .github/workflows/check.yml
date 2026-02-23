@@ -87,7 +87,7 @@ jobs:
       run: |
         cp target/release/frontcache-server .
         cp target/release/frontcache-router .
-        cp target/wheels/frontcache-*.whl .
+        cp target/wheels/frontcache-*linux*.whl .
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -144,13 +144,13 @@ jobs:
     - name: Build ARM64 wheel
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      run: cd py && uv run maturin build --release --target aarch64-unknown-linux-gnu
+      run: cd py && uv run maturin build --release --target aarch64-unknown-linux-gnu -i python3.12
 
     - name: Copy binaries and wheel
       run: |
         cp target/aarch64-unknown-linux-gnu/release/frontcache-server .
         cp target/aarch64-unknown-linux-gnu/release/frontcache-router .
-        cp target/wheels/frontcache-*.whl .
+        cp target/wheels/frontcache-*linux*.whl .
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3

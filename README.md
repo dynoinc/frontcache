@@ -42,7 +42,7 @@ Metrics are exported via [OpenTelemetry](https://opentelemetry.io/docs/languages
 
 ### Cache Purger
 
-The server runs a background purger that monitors disk usage every 10 seconds. When a cache directory exceeds 95% capacity, the purger evicts least-recently-used blocks until the target fill rate is restored. LRU state is not persisted to disk.
+The server runs a background purger that monitors disk usage every 10 seconds. When a cache directory exceeds 95% capacity, the purger evicts least-recently-used blocks until the target fill rate is restored. LRU timestamps are persisted to a separate redb table and flushed every 60 seconds, so eviction order survives restarts.
 
 ## Kubernetes
 
