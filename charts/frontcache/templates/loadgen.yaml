@@ -8,6 +8,7 @@ metadata:
 data:
   loadgen.py: |
     import asyncio
+    import random
     import frontcache
 
     ROUTER = "http://{{ include "frontcache.fullname" . }}-router:{{ .Values.router.service.port }}"
@@ -22,15 +23,18 @@ data:
         print(f"Connected, {FILE_COUNT} files x {FILE_SIZE} bytes, sleep={SLEEP}s")
         i = 0
         while True:
-            for f in FILES:
-                offset = (i * 4096) % FILE_SIZE
-                try:
-                    async for chunk in client.stream_range(f, offset=offset, length=4096, version="v1"):
-                        pass
-                except Exception as e:
-                    print(f"Error reading {f} offset={offset}: {e}")
+            f = random.choice(FILES)
+            offset = random.randrange(0, FILE_SIZE, 4096)
+            try:
+                nbytes = 0
+                async for chunk in client.stream_range(f, offset=offset, length=4096, version="v1"):
+                    nbytes += len(chunk)
                 i += 1
-                await asyncio.sleep(SLEEP)
+                if i % 100 == 0:
+                    print(f"Completed {i} reads")
+            except Exception as e:
+                print(f"Error reading {f} offset={offset}: {e}")
+            await asyncio.sleep(SLEEP)
 
     asyncio.run(main())
 ---

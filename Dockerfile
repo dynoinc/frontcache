@@ -10,5 +10,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY frontcache-server /usr/local/bin/frontcache-server
 COPY frontcache-router /usr/local/bin/frontcache-router
-COPY frontcache-*.whl /tmp/
-RUN pip3 install --no-cache-dir --break-system-packages /tmp/frontcache-*.whl && rm /tmp/*.whl
+COPY wheels/ /tmp/wheels/
+RUN pip3 install --no-cache-dir --break-system-packages /tmp/wheels/*.whl && rm -rf /tmp/wheels
