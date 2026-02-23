@@ -10,6 +10,7 @@ use parking_lot::RwLock;
 use crate::cache::{BLOCK_SIZE, Cache};
 
 const PURGE_INTERVAL: Duration = Duration::from_secs(10);
+const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 const MIN_FREE_PERCENT: u64 = 5;
 
 #[derive(Copy, Clone)]
@@ -90,6 +91,15 @@ pub fn start_purger(cache: Arc<Cache>) {
             let m = frontcache_metrics::get();
             m.disk_total_bytes.record(total_bytes as f64, &[]);
             m.disk_available_bytes.record(available_bytes as f64, &[]);
+        }
+    });
+}
+
+pub fn start_flusher(cache: Arc<Cache>) {
+    tokio::spawn(async move {
+        loop {
+            sleep(FLUSH_INTERVAL).await;
+            cache.flush_last_accessed();
         }
     });
 }

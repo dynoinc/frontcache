@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use cache::Cache;
 use clap::Parser;
-use disk::{Disk, start_purger};
+use disk::{Disk, start_flusher, start_purger};
 use index::Index;
 use server::CacheServer;
 use store::Store;
@@ -58,6 +58,7 @@ async fn main() -> Result<()> {
 
     cache.init_from_disk().await?;
     start_purger(cache.clone());
+    start_flusher(cache.clone());
 
     tracing::info!("Starting frontcache server on {}", args.listen);
     CacheServer::new(cache.clone()).serve(args.listen).await?;

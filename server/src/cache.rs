@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use anyhow::bail;
-use dashmap::{DashMap, mapref::entry::Entry};
+use dashmap::{DashMap, DashSet, mapref::entry::Entry};
 use futures_util::future::{FutureExt, Shared};
 use opentelemetry::KeyValue;
 use short_uuid::ShortUuid;
@@ -45,6 +45,7 @@ enum CacheState {
 
 pub struct Cache {
     states: DashMap<BlockKey, CacheState>,
+    dirty: DashSet<BlockKey>,
     index: Arc<Index>,
     store: Arc<Store>,
     disks: Vec<Arc<Disk>>,
@@ -54,6 +55,7 @@ impl Cache {
     pub fn new(index: Arc<Index>, store: Arc<Store>, disks: Vec<Arc<Disk>>) -> Self {
         Self {
             states: DashMap::new(),
+            dirty: DashSet::new(),
             index,
             store,
             disks,
@@ -67,21 +69,22 @@ impl Cache {
     pub async fn init_from_disk(&self) -> Result<()> {
         let mut cleanup_keys = Vec::new();
 
-        for (block_key, entry) in self.index.list_all()? {
-            match entry.state {
+        for (block_key, record) in self.index.list_all()? {
+            match record.entry.state {
                 BlockState::Writing | BlockState::Purging => {
                     tracing::warn!("Found incomplete operation, cleaning up: {:?}", block_key);
-                    let block_path = PathBuf::from(&entry.path);
+                    let block_path = PathBuf::from(&record.entry.path);
                     let _ = tokio::fs::remove_file(&block_path).await;
                     cleanup_keys.push(block_key);
                 }
                 BlockState::Downloaded => {
-                    let block_path = PathBuf::from(&entry.path);
+                    let block_path = PathBuf::from(&record.entry.path);
                     if !block_path.exists() {
                         bail!("Block {:?} in index is missing from disk", block_key);
                     }
+                    let last_accessed = record.last_accessed.unwrap_or_else(Block::now);
                     let block =
-                        Block::from_disk(block_path, entry.version.clone(), entry.last_accessed)?;
+                        Block::from_disk(block_path, record.entry.version.clone(), last_accessed)?;
                     self.states.insert(
                         block_key,
                         CacheState::Ready {
@@ -109,6 +112,7 @@ impl Cache {
             Entry::Occupied(entry) => match entry.get() {
                 CacheState::Ready { block } => {
                     block.record_access();
+                    self.dirty.insert(key);
                     let m = frontcache_metrics::get();
                     m.cache_get_duration.record(
                         start.elapsed().as_secs_f64(),
@@ -198,7 +202,6 @@ impl Cache {
                     path: block_path.to_string_lossy().to_string(),
                     state: BlockState::Writing,
                     version: read_result.version.clone(),
-                    last_accessed: 0,
                 },
             )])
             .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
@@ -224,7 +227,6 @@ impl Cache {
                 path: block_path.to_string_lossy().to_string(),
                 state: BlockState::Downloaded,
                 version: read_result.version,
-                last_accessed: block.last_accessed(),
             },
         )]) {
             let _ = tokio::fs::remove_file(block.path()).await;
@@ -232,6 +234,7 @@ impl Cache {
             return Err(CacheError::IndexUpdate(Arc::new(e)));
         }
 
+        self.dirty.insert(key.clone());
         Ok(Arc::new(block))
     }
 
@@ -266,14 +269,13 @@ impl Cache {
         }
 
         self.index
-            .upsert(victims.iter().map(|(ts, key, path, version)| {
+            .upsert(victims.iter().map(|(_, key, path, version)| {
                 (
                     key.clone(),
                     BlockEntry {
                         path: path.to_string_lossy().to_string(),
                         state: BlockState::Purging,
                         version: version.clone(),
-                        last_accessed: *ts,
                     },
                 )
             }))?;
@@ -282,6 +284,7 @@ impl Cache {
 
         for key in &keys {
             self.states.remove(key);
+            self.dirty.remove(key);
         }
 
         for (_, _, path, _) in &victims {
@@ -293,5 +296,33 @@ impl Cache {
         self.index.delete_many(&keys)?;
 
         Ok(())
+    }
+
+    pub fn flush_last_accessed(&self) {
+        let mut dirty_keys = Vec::new();
+        self.dirty.retain(|key| {
+            dirty_keys.push(key.clone());
+            false
+        });
+
+        if dirty_keys.is_empty() {
+            return;
+        }
+
+        let entries: Vec<_> = dirty_keys
+            .into_iter()
+            .filter_map(|key| {
+                let entry = self.states.get(&key)?;
+                if let CacheState::Ready { block } = entry.value() {
+                    Some((key, block.last_accessed()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if let Err(e) = self.index.flush_last_accessed(entries) {
+            tracing::error!("Failed to flush last_accessed: {}", e);
+        }
     }
 }
