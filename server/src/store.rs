@@ -99,6 +99,7 @@ impl Store {
     }
 
     pub async fn head(&self, key: &str) -> Result<String, StoreError> {
+        let start = Instant::now();
         let (provider, bucket, path) = Self::parse_key(key)?;
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
@@ -110,9 +111,26 @@ impl Store {
         let result = backend
             .get_opts(&obj_path, opts)
             .await
-            .map_err(|e| StoreError::from_object_store(e, key))?;
+            .map_err(|e| StoreError::from_object_store(e, key));
 
-        Ok(Self::extract_version(&result))
+        let m = frontcache_metrics::get();
+        let status = result.as_ref().map(|_| "ok").unwrap_or_else(|e| {
+            if matches!(e, StoreError::NotFound(_)) {
+                "not_found"
+            } else {
+                "error"
+            }
+        });
+        m.store_duration.record(
+            start.elapsed().as_secs_f64() * 1000.0,
+            &[
+                KeyValue::new("provider", provider),
+                KeyValue::new("status", status),
+                KeyValue::new("operation", "head"),
+            ],
+        );
+
+        Ok(Self::extract_version(&result?))
     }
 
     fn extract_version(result: &object_store::GetResult) -> String {
@@ -150,11 +168,12 @@ impl Store {
                 "error"
             }
         });
-        m.store_read_duration.record(
-            start.elapsed().as_secs_f64(),
+        m.store_duration.record(
+            start.elapsed().as_secs_f64() * 1000.0,
             &[
                 KeyValue::new("provider", provider.clone()),
                 KeyValue::new("status", status),
+                KeyValue::new("operation", "read"),
             ],
         );
 

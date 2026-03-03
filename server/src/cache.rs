@@ -265,9 +265,12 @@ impl Cache {
             Action::Read(block) => match block.open_reader() {
                 Ok(reader) => {
                     let m = frontcache_metrics::get();
-                    m.cache_get_duration.record(
-                        start.elapsed().as_secs_f64(),
-                        &[KeyValue::new("result", "hit")],
+                    m.cache_duration.record(
+                        start.elapsed().as_secs_f64() * 1000.0,
+                        &[
+                            KeyValue::new("result", "hit"),
+                            KeyValue::new("operation", "get"),
+                        ],
                     );
                     Ok(CacheHit::Disk {
                         reader,
@@ -292,9 +295,12 @@ impl Cache {
                 let outcome = future.await.unwrap();
 
                 let m = frontcache_metrics::get();
-                m.cache_get_duration.record(
-                    start.elapsed().as_secs_f64(),
-                    &[KeyValue::new("result", "wait")],
+                m.cache_duration.record(
+                    start.elapsed().as_secs_f64() * 1000.0,
+                    &[
+                        KeyValue::new("result", "wait"),
+                        KeyValue::new("operation", "get"),
+                    ],
                 );
 
                 match outcome.as_ref() {
@@ -333,9 +339,12 @@ impl Cache {
 
                 let m = frontcache_metrics::get();
                 let label = if outcome.is_ok() { "miss" } else { "error" };
-                m.cache_get_duration.record(
-                    start.elapsed().as_secs_f64(),
-                    &[KeyValue::new("result", label)],
+                m.cache_duration.record(
+                    start.elapsed().as_secs_f64() * 1000.0,
+                    &[
+                        KeyValue::new("result", label),
+                        KeyValue::new("operation", "get"),
+                    ],
                 );
 
                 match outcome.as_ref() {

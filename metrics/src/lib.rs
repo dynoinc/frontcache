@@ -19,9 +19,9 @@ static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub struct Metrics {
     rpc_duration: Histogram<f64>,
-    pub store_read_duration: Histogram<f64>,
+    pub store_duration: Histogram<f64>,
     pub store_read_bytes: Histogram<f64>,
-    pub cache_get_duration: Histogram<f64>,
+    pub cache_duration: Histogram<f64>,
     pub ring_members: Gauge<u64>,
     pub ring_member_changes: Counter<u64>,
     pub bytes_served: Counter<u64>,
@@ -50,27 +50,27 @@ pub fn init() {
     let meter = provider.meter("frontcache");
 
     let latency_buckets = vec![
-        0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0,
     ];
 
     METRICS.get_or_init(|| Metrics {
         rpc_duration: meter
-            .f64_histogram("rpc_duration_seconds")
-            .with_description("RPC request duration in seconds")
+            .f64_histogram("rpc_duration_ms")
+            .with_description("RPC request duration in milliseconds")
             .with_boundaries(latency_buckets.clone())
             .build(),
-        store_read_duration: meter
-            .f64_histogram("store_read_duration_seconds")
-            .with_description("Upstream store read duration in seconds")
+        store_duration: meter
+            .f64_histogram("store_duration_ms")
+            .with_description("Upstream store operation duration in milliseconds")
             .with_boundaries(latency_buckets.clone())
             .build(),
         store_read_bytes: meter
             .f64_histogram("store_read_bytes")
             .with_description("Bytes read from upstream store")
             .build(),
-        cache_get_duration: meter
-            .f64_histogram("cache_get_duration_seconds")
-            .with_description("Cache get operation duration in seconds")
+        cache_duration: meter
+            .f64_histogram("cache_duration_ms")
+            .with_description("Cache operation duration in milliseconds")
             .with_boundaries(latency_buckets)
             .build(),
         ring_members: meter
@@ -169,7 +169,7 @@ where
             };
 
             get().rpc_duration.record(
-                start.elapsed().as_secs_f64(),
+                start.elapsed().as_secs_f64() * 1000.0,
                 &[
                     KeyValue::new("rpc.method", method),
                     KeyValue::new("rpc.grpc.status", status),
