@@ -1,7 +1,8 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
 use std::time::Instant;
 
-use dashmap::{DashMap, DashSet, mapref::entry::Entry};
+use dashmap::{DashMap, mapref::entry::Entry};
 use futures_util::future::{FutureExt, Shared};
 use opentelemetry::KeyValue;
 use rayon::prelude::*;
@@ -81,7 +82,7 @@ type ObjKey = (String, u64);
 
 pub struct Cache {
     states: DashMap<ObjKey, Slot>,
-    dirty: DashSet<BlockKey>,
+    dirty: Mutex<HashMap<BlockKey, u64>>,
     index: Arc<Index>,
     store: Arc<Store>,
     disks: Vec<Arc<Disk>>,
@@ -124,7 +125,7 @@ impl Cache {
     ) -> Self {
         Self {
             states: DashMap::new(),
-            dirty: DashSet::new(),
+            dirty: Mutex::new(HashMap::new()),
             index,
             store,
             disks,
@@ -134,6 +135,10 @@ impl Cache {
 
     pub fn disks(&self) -> &[Arc<Disk>] {
         &self.disks
+    }
+
+    fn mark_dirty(&self, key: BlockKey, ts: u64) {
+        self.dirty.lock().unwrap().insert(key, ts);
     }
 
     pub fn block_count(&self) -> usize {
@@ -236,8 +241,10 @@ impl Cache {
                 };
                 if let Some(block) = block {
                     block.record_access();
-                    self.dirty
-                        .insert((obj_key.0.clone(), obj_key.1, block.version().to_string()));
+                    self.mark_dirty(
+                        (obj_key.0.clone(), obj_key.1, block.version().to_string()),
+                        block.last_accessed(),
+                    );
                     Action::Read(block)
                 } else {
                     let inflight_key = version.map(|v| v.to_string());
@@ -302,7 +309,10 @@ impl Cache {
                 Err(e) => Err(CacheError::ReadBlock(Arc::new(e))),
             },
             Action::Wait(future) => {
-                let outcome = future.await.unwrap();
+                let outcome = match future.await {
+                    Ok(outcome) => outcome,
+                    Err(_) => return Err(CacheError::DownloadAborted),
+                };
 
                 let m = frontcache_metrics::get();
                 m.cache_duration.record(
@@ -385,7 +395,6 @@ impl Cache {
         if let Some(mut slot) = self.states.get_mut(obj_key) {
             slot.versions.remove(version);
         }
-        self.dirty.remove(&block_key);
     }
 
     async fn download_block(
@@ -457,7 +466,7 @@ impl Cache {
         let block = match pending.persist() {
             Ok(b) => b,
             Err(e) => {
-                if let Err(idx_err) = self.index.delete_many(&[block_key]) {
+                if let Err(idx_err) = self.index.delete_many(std::slice::from_ref(&block_key)) {
                     tracing::error!("Failed to rollback index entry: {}", idx_err);
                 }
                 return Err(CacheError::CreateFile(Arc::new(e)));
@@ -479,7 +488,7 @@ impl Cache {
             });
         }
 
-        self.dirty.insert(block_key);
+        self.mark_dirty(block_key, block.last_accessed());
 
         let block = Arc::new(block);
         let block_size = block.size();
@@ -552,7 +561,6 @@ impl Cache {
                 if let Some(mut slot) = self.states.get_mut(&obj_key) {
                     slot.versions.remove(&key.2);
                 }
-                self.dirty.remove(key);
                 for disk in &self.disks {
                     if path.starts_with(disk.path()) {
                         disk.sub_used(*size);
@@ -581,12 +589,7 @@ impl Cache {
 
     pub fn flush_last_accessed(&self) {
         let start = std::time::Instant::now();
-        let now = Block::now();
-        let mut entries = Vec::new();
-        self.dirty.retain(|key| {
-            entries.push((key.clone(), now));
-            false
-        });
+        let entries = std::mem::take(&mut *self.dirty.lock().unwrap());
 
         if !entries.is_empty()
             && let Err(e) = self.index.flush_last_accessed(entries)

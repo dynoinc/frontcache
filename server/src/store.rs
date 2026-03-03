@@ -18,6 +18,8 @@ const VERSION_HEADER: &str = "x-frontcache-version";
 pub enum StoreError {
     #[error("Invalid key format: {0}")]
     InvalidKey(String),
+    #[error("Invalid byte range: offset={offset}, length={length}")]
+    InvalidRange { offset: u64, length: u64 },
     #[error("Unsupported provider: {0}")]
     UnsupportedProvider(String),
     #[error("Object not found: {0}")]
@@ -153,9 +155,12 @@ impl Store {
         let (provider, bucket, path) = Self::parse_key(key)?;
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
+        let end = offset
+            .checked_add(length)
+            .ok_or(StoreError::InvalidRange { offset, length })?;
 
         let opts = GetOptions {
-            range: Some((offset..(offset + length)).into()),
+            range: Some((offset..end).into()),
             ..Default::default()
         };
         let result = backend.get_opts(&obj_path, opts).await;

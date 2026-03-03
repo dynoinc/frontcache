@@ -70,9 +70,9 @@ impl CacheService for CacheServer {
                 let msg = format!("{:?}", e);
                 match &e {
                     CacheError::StoreRead(store_err) => match store_err.as_ref() {
-                        StoreError::InvalidKey(_) | StoreError::UnsupportedProvider(_) => {
-                            Status::invalid_argument(msg)
-                        }
+                        StoreError::InvalidKey(_)
+                        | StoreError::InvalidRange { .. }
+                        | StoreError::UnsupportedProvider(_) => Status::invalid_argument(msg),
                         StoreError::NotFound(_) => Status::not_found(msg),
                         StoreError::Backend(_) => Status::internal(msg),
                     },
@@ -93,7 +93,14 @@ impl CacheService for CacheServer {
             )));
         }
 
-        let chunk_end = block_len.min(offset_in_block + length as usize);
+        let req_len = usize::try_from(length)
+            .map_err(|_| Status::invalid_argument(format!("length {length} does not fit usize")))?;
+        let req_end = offset_in_block.checked_add(req_len).ok_or_else(|| {
+            Status::out_of_range(format!(
+                "offset {offset_in_block} + length {length} overflows block range"
+            ))
+        })?;
+        let chunk_end = block_len.min(req_end);
         frontcache_metrics::get().disk_byte_changes.add(
             (chunk_end - offset_in_block) as u64,
             &[KeyValue::new("action", "served")],

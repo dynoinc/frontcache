@@ -106,36 +106,52 @@ impl Index {
     }
 
     pub fn list_all(&self) -> Result<Vec<(BlockKey, BlockRecord)>, IndexError> {
-        let read_txn = self.db.begin_read()?;
-        let blocks_table = read_txn.open_table(BLOCKS_TABLE)?;
-        let la_table = read_txn.open_table(LAST_ACCESSED_TABLE)?;
+        let (records, stale_last_accessed): (Vec<(BlockKey, BlockRecord)>, Vec<BlockKey>) = {
+            let read_txn = self.db.begin_read()?;
+            let blocks_table = read_txn.open_table(BLOCKS_TABLE)?;
+            let la_table = read_txn.open_table(LAST_ACCESSED_TABLE)?;
 
-        let mut last_accessed_map = HashMap::new();
-        for item in la_table.iter()? {
-            let (k, v) = item?;
-            let kv = k.value();
-            let key: BlockKey = (kv.0.to_string(), kv.1, kv.2.to_string());
-            last_accessed_map.insert(key, v.value());
+            let mut last_accessed_map = HashMap::new();
+            for item in la_table.iter()? {
+                let (k, v) = item?;
+                let kv = k.value();
+                let key: BlockKey = (kv.0.to_string(), kv.1, kv.2.to_string());
+                last_accessed_map.insert(key, v.value());
+            }
+
+            let mut records = Vec::new();
+            for item in blocks_table.iter()? {
+                let (bk, bv) = item?;
+                let block_key: BlockKey = (
+                    bk.value().0.to_string(),
+                    bk.value().1,
+                    bk.value().2.to_string(),
+                );
+                let entry: BlockEntry = serde_json::from_slice(bv.value())?;
+                let last_accessed = last_accessed_map.remove(&block_key);
+                records.push((
+                    block_key,
+                    BlockRecord {
+                        entry,
+                        last_accessed,
+                    },
+                ));
+            }
+            (records, last_accessed_map.into_keys().collect())
+        };
+
+        if !stale_last_accessed.is_empty() {
+            let mut write_txn = self.db.begin_write()?;
+            write_txn.set_durability(Durability::None)?;
+            {
+                let mut table = write_txn.open_table(LAST_ACCESSED_TABLE)?;
+                for key in &stale_last_accessed {
+                    table.remove(key)?;
+                }
+            }
+            write_txn.commit()?;
         }
 
-        let mut records = Vec::new();
-        for item in blocks_table.iter()? {
-            let (bk, bv) = item?;
-            let block_key: BlockKey = (
-                bk.value().0.to_string(),
-                bk.value().1,
-                bk.value().2.to_string(),
-            );
-            let entry: BlockEntry = serde_json::from_slice(bv.value())?;
-            let last_accessed = last_accessed_map.remove(&block_key);
-            records.push((
-                block_key,
-                BlockRecord {
-                    entry,
-                    last_accessed,
-                },
-            ));
-        }
         Ok(records)
     }
 }
