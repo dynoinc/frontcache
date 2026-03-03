@@ -14,6 +14,7 @@ use frontcache_server::{
     server::CacheServer,
     store::Store,
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
 #[command(name = "frontcache-server")]
@@ -83,12 +84,18 @@ async fn main() -> Result<()> {
     let cache = Arc::new(Cache::new(index.clone(), store, disks));
 
     cache.init_from_disk()?;
-    start_purger(cache.clone());
-    start_flusher(cache.clone());
+    let shutdown = CancellationToken::new();
+    let purger = start_purger(cache.clone(), shutdown.clone());
+    let flusher = start_flusher(cache.clone(), shutdown.clone());
 
     tracing::info!("Starting frontcache server on {}", args.listen);
     CacheServer::new(cache.clone()).serve(args.listen).await?;
 
+    tracing::info!("Shutting down");
+    shutdown.cancel();
+    let _ = purger.await;
+    let _ = flusher.await;
+    cache.flush_last_accessed();
     frontcache_metrics::shutdown()?;
     Ok(())
 }

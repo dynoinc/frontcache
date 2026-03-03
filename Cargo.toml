@@ -54,6 +54,7 @@ opentelemetry = { version = "0.27", default-features = false }
 opentelemetry_sdk = { version = "0.27", default-features = false, features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.27", default-features = false, features = ["metrics", "grpc-tonic"] }
 tokio-retry2 = { version = "0.5", features = ["jitter"] }
+tokio-util = "0.7"
 tower = "0.5"
 http = "1.0"
 
