@@ -60,7 +60,8 @@ impl Index {
         &self,
         entries: impl IntoIterator<Item = (BlockKey, BlockEntry)>,
     ) -> Result<(), IndexError> {
-        let write_txn = self.db.begin_write()?;
+        let mut write_txn = self.db.begin_write()?;
+        write_txn.set_durability(Durability::None)?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
             for ((object, offset), entry) in entries {
@@ -73,7 +74,8 @@ impl Index {
     }
 
     pub fn delete_many(&self, keys: &[BlockKey]) -> Result<(), IndexError> {
-        let write_txn = self.db.begin_write()?;
+        let mut write_txn = self.db.begin_write()?;
+        write_txn.set_durability(Durability::None)?;
         {
             let mut blocks = write_txn.open_table(BLOCKS_TABLE)?;
             let mut last_accessed = write_txn.open_table(LAST_ACCESSED_TABLE)?;
