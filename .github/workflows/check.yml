@@ -79,6 +79,15 @@ jobs:
         cp target/release/frontcache-server .
         cp target/release/frontcache-router .
 
+    - name: Upload AMD64 binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontcache-main-${{ needs.check.outputs.short_sha }}-linux-amd64
+        path: |
+          frontcache-server
+          frontcache-router
+        retention-days: 30
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -132,6 +141,15 @@ jobs:
       run: |
         cp target/aarch64-unknown-linux-gnu/release/frontcache-server .
         cp target/aarch64-unknown-linux-gnu/release/frontcache-router .
+
+    - name: Upload ARM64 binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontcache-main-${{ needs.check.outputs.short_sha }}-linux-arm64
+        path: |
+          frontcache-server
+          frontcache-router
+        retention-days: 30
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
