@@ -9,6 +9,7 @@ Distributed pull-through cache for object storage (S3/GCS).
 - Kubernetes auto-discovery
 - Aligned direct I/O reads
 - OpenTelemetry metrics for observability
+- Backend fetch rate limiting (concurrency, RPS, bandwidth)
 
 ## Architecture
 

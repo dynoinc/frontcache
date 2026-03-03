@@ -15,7 +15,8 @@ use frontcache_proto::{
 };
 use frontcache_router::{ring::Straw2Router, server::RouterServer};
 use frontcache_server::{
-    cache::Cache, disk::Disk, index::Index, server::CacheServer, store::Store,
+    cache::Cache, disk::Disk, index::Index, limiter::FetchLimiter, server::CacheServer,
+    store::Store,
 };
 
 const BUCKET: &str = "test-bucket";
@@ -46,7 +47,12 @@ async fn start_cluster() -> Result<TestCluster> {
         ("inmem".to_string(), BUCKET.to_string()),
         mock.clone() as Arc<dyn ObjectStore>,
     );
-    let cache = Arc::new(Cache::new(index, store, vec![disk]));
+    let cache = Arc::new(Cache::new(
+        index,
+        store,
+        vec![disk],
+        Arc::new(FetchLimiter::from_env()),
+    ));
     cache.init_from_disk()?;
 
     // Cache server

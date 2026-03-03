@@ -77,6 +77,7 @@ impl CacheService for CacheServer {
                         StoreError::Backend(_) => Status::internal(msg),
                     },
                     CacheError::VersionMismatch { .. } => Status::failed_precondition(msg),
+                    CacheError::Throttled => Status::resource_exhausted(msg),
                     _ => Status::internal(msg),
                 }
             })?;

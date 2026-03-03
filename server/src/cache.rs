@@ -18,6 +18,7 @@ use crate::{
     block::{Block, BlockReader, PendingBlock},
     disk::{Disk, select_disk},
     index::{BlockEntry, BlockKey, Index, IndexError},
+    limiter::FetchLimiter,
     store::{Store, StoreError},
 };
 
@@ -37,6 +38,8 @@ pub enum CacheError {
     VersionMismatch { upstream: String, requested: String },
     #[error("Download task aborted")]
     DownloadAborted,
+    #[error("Request throttled by backend fetch limiter")]
+    Throttled,
 }
 
 pub enum CacheHit {
@@ -82,6 +85,7 @@ pub struct Cache {
     index: Arc<Index>,
     store: Arc<Store>,
     disks: Vec<Arc<Disk>>,
+    limiter: Arc<FetchLimiter>,
 }
 
 enum Action {
@@ -112,13 +116,19 @@ fn walk_blk_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 impl Cache {
-    pub fn new(index: Arc<Index>, store: Arc<Store>, disks: Vec<Arc<Disk>>) -> Self {
+    pub fn new(
+        index: Arc<Index>,
+        store: Arc<Store>,
+        disks: Vec<Arc<Disk>>,
+        limiter: Arc<FetchLimiter>,
+    ) -> Self {
         Self {
             states: DashMap::new(),
             dirty: DashSet::new(),
             index,
             store,
             disks,
+            limiter,
         }
     }
 
@@ -338,7 +348,11 @@ impl Cache {
                 let outcome = rx.await.map_err(|_| CacheError::DownloadAborted)?;
 
                 let m = frontcache_metrics::get();
-                let label = if outcome.is_ok() { "miss" } else { "error" };
+                let label = match outcome.as_ref() {
+                    Ok(_) => "miss",
+                    Err(CacheError::Throttled) => "throttled",
+                    Err(_) => "error",
+                };
                 m.cache_duration.record(
                     start.elapsed().as_secs_f64() * 1000.0,
                     &[
@@ -383,6 +397,16 @@ impl Cache {
         let (object, block_offset) = obj_key;
         tracing::info!("Downloading block {}:{}", object, block_offset);
 
+        let _permit = self
+            .limiter
+            .acquire_concurrency()
+            .await
+            .map_err(|_| CacheError::Throttled)?;
+        self.limiter
+            .wait_for_request()
+            .await
+            .map_err(|_| CacheError::Throttled)?;
+
         // HEAD check: only when we have cached versions but not the requested one.
         // Cold misses skip HEAD — high chance the requested version is the current one.
         if had_versions && let Some(requested) = requested_version {
@@ -408,6 +432,10 @@ impl Cache {
             .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
 
         let data = read_result.data.clone();
+        self.limiter
+            .wait_for_bytes(data.len())
+            .await
+            .map_err(|_| CacheError::Throttled)?;
         let version = read_result.version.clone();
 
         let pending = PendingBlock::prepare(disk.path(), read_result.data, version.clone())

@@ -29,4 +29,5 @@ tikv-jemallocator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio-util = { workspace = true }
+governor = { workspace = true }
 opentelemetry = { workspace = true }

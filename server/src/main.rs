@@ -11,6 +11,7 @@ use frontcache_server::{
     cache::Cache,
     disk::{Disk, register_disk_metrics, start_flusher},
     index::Index,
+    limiter::FetchLimiter,
     server::CacheServer,
     store::Store,
 };
@@ -81,7 +82,8 @@ async fn main() -> Result<()> {
     }
     let index = Arc::new(Index::open(args.index_path)?);
     let store = Arc::new(Store::new());
-    let cache = Arc::new(Cache::new(index.clone(), store, disks));
+    let limiter = Arc::new(FetchLimiter::from_env());
+    let cache = Arc::new(Cache::new(index.clone(), store, disks, limiter));
 
     cache.init_from_disk()?;
 

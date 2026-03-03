@@ -21,6 +21,7 @@ use frontcache_server::{
     cache::Cache,
     disk::{Disk, start_flusher},
     index::Index,
+    limiter::FetchLimiter,
     store::Store,
 };
 
@@ -144,7 +145,12 @@ fn bare_cache() -> BareCache {
         ("inmem".to_string(), BUCKET.to_string()),
         gated.clone() as Arc<dyn ObjectStore>,
     );
-    let cache = Arc::new(Cache::new(index, store, vec![disk]));
+    let cache = Arc::new(Cache::new(
+        index,
+        store,
+        vec![disk],
+        Arc::new(FetchLimiter::from_env()),
+    ));
     cache.init_from_disk().unwrap();
 
     BareCache {
@@ -263,7 +269,12 @@ async fn shutdown_stops_background_tasks() -> Result<()> {
     let disk = Disk::new(cache_dir, 1024 * 1024 * 1024);
     let index = Arc::new(Index::open(tmp.path().join("index.db"))?);
     let store = Arc::new(Store::new());
-    let cache = Arc::new(Cache::new(index, store, vec![disk]));
+    let cache = Arc::new(Cache::new(
+        index,
+        store,
+        vec![disk],
+        Arc::new(FetchLimiter::from_env()),
+    ));
     cache.init_from_disk()?;
 
     let token = CancellationToken::new();
