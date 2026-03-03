@@ -21,6 +21,12 @@ pub struct Straw2Router {
     snapshot: RwLock<Arc<Snapshot>>,
 }
 
+impl Default for Straw2Router {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Straw2Router {
     pub fn new() -> Self {
         Self {

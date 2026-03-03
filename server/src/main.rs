@@ -1,10 +1,3 @@
-mod block;
-mod cache;
-mod disk;
-mod index;
-mod server;
-mod store;
-
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -13,12 +6,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use cache::Cache;
 use clap::Parser;
-use disk::{Disk, start_flusher, start_purger};
-use index::Index;
-use server::CacheServer;
-use store::Store;
+use frontcache_server::{
+    cache::Cache,
+    disk::{Disk, start_flusher, start_purger},
+    index::Index,
+    server::CacheServer,
+    store::Store,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "frontcache-server")]

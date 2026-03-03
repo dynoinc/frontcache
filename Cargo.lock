@@ -710,6 +710,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "frontcache-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "frontcache-client",
+ "frontcache-metrics",
+ "frontcache-proto",
+ "frontcache-router",
+ "frontcache-server",
+ "futures",
+ "object_store",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"

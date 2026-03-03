@@ -1,0 +1,19 @@
+[package]
+name = "frontcache-tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frontcache-server = { path = "../server" }
+frontcache-router = { path = "../router" }
+frontcache-client = { path = "../client" }
+frontcache-proto = { path = "../proto" }
+frontcache-metrics = { path = "../metrics" }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+tempfile = { workspace = true }
+object_store = { workspace = true }
+futures = { workspace = true }

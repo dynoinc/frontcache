@@ -1,7 +1,3 @@
-mod membership;
-mod ring;
-mod server;
-
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -11,9 +7,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 
-use membership::K8sMembership;
-use ring::Straw2Router;
-use server::RouterServer;
+use frontcache_router::{membership::K8sMembership, ring::Straw2Router, server::RouterServer};
 
 #[derive(Parser, Debug)]
 #[command(name = "frontcache-router")]

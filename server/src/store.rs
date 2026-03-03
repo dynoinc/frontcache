@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use object_store::memory::InMemory;
 use object_store::{
     Error as ObjectStoreError, GetOptions, ObjectStore as ObjStore, aws::AmazonS3Builder,
     gcp::GoogleCloudStorageBuilder, path::Path as ObjPath,
@@ -40,7 +41,13 @@ pub struct ReadResult {
 }
 
 pub struct Store {
-    backends: DashMap<(String, String), Arc<dyn ObjStore>>,
+    pub backends: DashMap<(String, String), Arc<dyn ObjStore>>,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Store {
@@ -83,6 +90,7 @@ impl Store {
                     .map_err(StoreError::Backend)?;
                 Arc::new(gcs)
             }
+            "inmem" => Arc::new(InMemory::new()),
             _ => return Err(StoreError::UnsupportedProvider(provider.to_string())),
         };
 

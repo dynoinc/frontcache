@@ -6,6 +6,7 @@ members = [
     "loadgen",
     "server",
     "router",
+    "tests",
 ]
 default-members = [
     "proto",
