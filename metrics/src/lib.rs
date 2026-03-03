@@ -7,10 +7,7 @@ use opentelemetry::{
     metrics::{Counter, Gauge, Histogram, Meter, MeterProvider as _},
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
-use opentelemetry_sdk::{
-    metrics::{PeriodicReader, SdkMeterProvider},
-    runtime,
-};
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use tonic::Code;
 use tower::{Layer, Service, ServiceExt};
 
@@ -43,7 +40,7 @@ pub fn init() {
                 .build()
                 .expect("Failed to create OTLP exporter");
 
-            let reader = PeriodicReader::builder(exporter, runtime::Tokio).build();
+            let reader = PeriodicReader::builder(exporter).build();
 
             SdkMeterProvider::builder().with_reader(reader).build()
         } else {
@@ -107,7 +104,7 @@ pub fn init() {
     });
 }
 
-pub fn shutdown() -> opentelemetry_sdk::metrics::MetricResult<()> {
+pub fn shutdown() -> opentelemetry_sdk::error::OTelSdkResult {
     if let Some(provider) = METER_PROVIDER.get() {
         provider.shutdown()?;
     }

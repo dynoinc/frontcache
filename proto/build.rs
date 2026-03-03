@@ -3,10 +3,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("cache_descriptor_set.bin");
     println!("cargo:rerun-if-changed=cache_descriptor_set.bin");
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .bytes(["."])
+        .bytes(".")
         .file_descriptor_set_path(&descriptor_set_path)
         .skip_protoc_run()
         .compile_protos(&["cache.proto"], &["."])?;
