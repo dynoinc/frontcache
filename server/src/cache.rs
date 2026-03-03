@@ -91,49 +91,21 @@ enum Action {
     },
 }
 
-fn walk_blk_files(dir: &Path) -> Vec<PathBuf> {
+fn walk_blk_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::error!("Failed to read cache directory {:?}: {}", dir, e);
-            return files;
-        }
-    };
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!("Failed to read entry in {:?}: {}", dir, e);
-                continue;
-            }
-        };
-        let path = entry.path();
-        if !path.is_dir() {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.path().is_dir() {
             continue;
         }
-        match std::fs::read_dir(&path) {
-            Ok(subdir) => {
-                for sub_entry in subdir {
-                    let sub_entry = match sub_entry {
-                        Ok(e) => e,
-                        Err(e) => {
-                            tracing::warn!("Failed to read entry in {:?}: {}", path, e);
-                            continue;
-                        }
-                    };
-                    let sub_path = sub_entry.path();
-                    if sub_path.extension().is_some_and(|ext| ext == "blk") {
-                        files.push(sub_path);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to read subdir {:?}: {}", path, e);
+        for sub in std::fs::read_dir(entry.path())? {
+            let path = sub?.path();
+            if path.extension().is_some_and(|ext| ext == "blk") {
+                files.push(path);
             }
         }
     }
-    files
+    Ok(files)
 }
 
 impl Cache {
@@ -162,7 +134,10 @@ impl Cache {
         let disk_paths: Vec<&Path> = self.disks.iter().map(|d| d.path()).collect();
         let existing: HashSet<PathBuf> = disk_paths
             .par_iter()
-            .flat_map_iter(|path| walk_blk_files(path))
+            .map(|path| walk_blk_files(path))
+            .collect::<std::io::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
             .collect();
 
         let mut cleanup_keys = Vec::new();
