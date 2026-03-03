@@ -112,13 +112,15 @@ pub fn shutdown() -> opentelemetry_sdk::error::OTelSdkResult {
 }
 
 pub fn get() -> &'static Metrics {
-    METRICS.get().expect("Metrics not initialized")
+    METRICS
+        .get()
+        .expect("Metrics not initialized. Call metrics::init() before using metrics")
 }
 
 pub fn meter() -> Meter {
     METER_PROVIDER
         .get()
-        .expect("Metrics not initialized")
+        .expect("Metrics not initialized. Call metrics::init() before using metrics")
         .meter("frontcache")
 }
 

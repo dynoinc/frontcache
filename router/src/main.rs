@@ -17,7 +17,11 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:8081")]
     listen: SocketAddr,
 
-    #[arg(long, default_value = "app=frontcache")]
+    #[arg(
+        long,
+        default_value = "",
+        help = "Kubernetes pod label selector for server discovery; empty disables discovery"
+    )]
     label: String,
 
     #[arg(long, default_value = "8080")]
@@ -36,8 +40,8 @@ async fn main() -> Result<()> {
     let shutdown = CancellationToken::new();
     let mut watcher_handle = None;
 
-    if std::path::Path::new("/var/run/secrets/kubernetes.io/serviceaccount/token").exists() {
-        tracing::info!("Kubernetes environment detected, enabling pod discovery");
+    if !args.label.trim().is_empty() {
+        tracing::info!("Label selector configured, enabling pod discovery");
         let membership = K8sMembership::new(args.label.clone(), args.server_port).await?;
 
         let ring_clone = ring.clone();
@@ -48,7 +52,7 @@ async fn main() -> Result<()> {
             }
         }));
     } else {
-        tracing::info!("Running in standalone mode");
+        tracing::info!("No label selector configured, running in standalone mode");
         ring.add_node(format!("localhost:{}", args.server_port));
     }
 

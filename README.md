@@ -27,7 +27,7 @@ Clients talk to the router to discover which server owns a block, then read dire
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | `0.0.0.0:8081` | Address to listen on |
-| `--label` | `app=frontcache` | Label selector for Kubernetes pod discovery |
+| `--label` | `` | Label selector for Kubernetes pod discovery |
 | `--server-port` | `8080` | Port that server pods listen on |
 
 ### Server Flags (`frontcache-server`)

@@ -108,6 +108,15 @@ impl Store {
         }
     }
 
+    fn provider_label(provider: &str) -> &'static str {
+        match provider {
+            "s3" => "s3",
+            "gs" => "gs",
+            "inmem" => "inmem",
+            _ => "unknown",
+        }
+    }
+
     pub async fn head(&self, key: &str) -> Result<String, StoreError> {
         let start = Instant::now();
         let (provider, bucket, path) = Self::parse_key(key)?;
@@ -137,13 +146,20 @@ impl Store {
     }
 
     fn extract_version(result: &object_store::GetResult) -> String {
-        result
+        if let Some(version) = result
             .attributes
             .get(&object_store::Attribute::Metadata(VERSION_HEADER.into()))
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| result.meta.e_tag.clone().unwrap_or_default())
-            .trim_matches('"')
-            .to_string()
+        {
+            version.to_string().trim_matches('"').to_string()
+        } else {
+            result
+                .meta
+                .e_tag
+                .as_deref()
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string()
+        }
     }
 
     pub async fn read_range(
@@ -154,6 +170,7 @@ impl Store {
     ) -> Result<ReadResult, StoreError> {
         let start = Instant::now();
         let (provider, bucket, path) = Self::parse_key(key)?;
+        let provider_label = Self::provider_label(&provider);
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
         let end = offset
@@ -171,7 +188,7 @@ impl Store {
         m.store_duration.record(
             start.elapsed().as_secs_f64() * 1000.0,
             &[
-                KeyValue::new("provider", provider.clone()),
+                KeyValue::new("provider", provider_label),
                 KeyValue::new("status", Self::status_label(&result)),
                 KeyValue::new("operation", "read"),
             ],
@@ -185,8 +202,10 @@ impl Store {
             .await
             .map_err(|e| StoreError::from_object_store(e, key))?;
 
-        m.store_read_bytes
-            .record(data.len() as f64, &[KeyValue::new("provider", provider)]);
+        m.store_read_bytes.record(
+            data.len() as f64,
+            &[KeyValue::new("provider", provider_label)],
+        );
 
         Ok(ReadResult { data, version })
     }

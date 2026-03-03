@@ -25,7 +25,7 @@ spec:
             - "--listen"
             - {{ .Values.router.listen | quote }}
             - "--label"
-            - {{ include "frontcache.serverLabelSelector" . | quote }}
+            - {{ default (include "frontcache.serverLabelSelector" .) .Values.router.label | quote }}
             - "--server-port"
             - {{ .Values.router.serverPort | quote }}
           ports:

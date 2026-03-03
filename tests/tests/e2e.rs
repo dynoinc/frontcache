@@ -20,6 +20,7 @@ use frontcache_server::{
 };
 
 const BUCKET: &str = "test-bucket";
+const DATA_42_1K: &[u8] = &[42u8; 1024];
 
 fn object_key(path: &str) -> String {
     format!("inmem://{}/{}", BUCKET, path)
@@ -131,11 +132,10 @@ async fn seed(store: &InMemory, path: &str, data: &[u8]) -> Result<()> {
 async fn basic_read() -> Result<()> {
     let c = start_cluster().await?;
 
-    let data = vec![42u8; 1024];
-    seed(&c.mock, "test/file.dat", &data).await?;
+    seed(&c.mock, "test/file.dat", DATA_42_1K).await?;
 
     let got = read_all(&c.client, &object_key("test/file.dat"), 0, 1024, None).await?;
-    assert_eq!(got, data);
+    assert_eq!(got.as_slice(), DATA_42_1K);
     Ok(())
 }
 

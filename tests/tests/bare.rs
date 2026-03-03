@@ -26,6 +26,7 @@ use frontcache_server::{
 };
 
 const BUCKET: &str = "test-bucket";
+const DATA_42_1K: &[u8] = &[42u8; 1024];
 
 // ---------------------------------------------------------------------------
 // GatedStore — ObjectStore wrapper with deterministic synchronization
@@ -179,7 +180,7 @@ async fn seed(store: &InMemory, path: &str, data: &[u8]) -> Result<()> {
 #[tokio::test]
 async fn concurrent_reads_coalesce() -> Result<()> {
     let mut bc = bare_cache();
-    seed(&bc.store.inner, "test/coalesce.dat", &vec![42u8; 1024]).await?;
+    seed(&bc.store.inner, "test/coalesce.dat", DATA_42_1K).await?;
 
     let key = object_key("test/coalesce.dat");
     let cache1 = bc.cache.clone();
