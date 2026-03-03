@@ -482,27 +482,16 @@ impl Cache {
     }
 
     pub fn flush_last_accessed(&self) {
-        let mut dirty_keys = Vec::new();
+        let now = Block::now();
+        let mut entries = Vec::new();
         self.dirty.retain(|key| {
-            dirty_keys.push(key.clone());
+            entries.push((key.clone(), now));
             false
         });
 
-        if dirty_keys.is_empty() {
-            return;
-        }
-
-        let entries: Vec<_> = dirty_keys
-            .into_iter()
-            .filter_map(|key| {
-                let obj_key: ObjKey = (key.0.clone(), key.1);
-                let slot = self.states.get(&obj_key)?;
-                let block = slot.versions.get(&key.2)?;
-                Some((key, block.last_accessed()))
-            })
-            .collect();
-
-        if let Err(e) = self.index.flush_last_accessed(entries) {
+        if !entries.is_empty()
+            && let Err(e) = self.index.flush_last_accessed(entries)
+        {
             tracing::error!("Failed to flush last_accessed: {}", e);
         }
     }
