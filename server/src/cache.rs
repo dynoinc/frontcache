@@ -453,34 +453,26 @@ impl Cache {
             return Ok(());
         }
 
-        let keys: Vec<BlockKey> = victims.iter().map(|(_, key, _, _)| key.clone()).collect();
-
-        for key in &keys {
+        let mut keys = Vec::with_capacity(victims.len());
+        for (_, key, path, size) in &victims {
+            keys.push(key.clone());
             let obj_key: ObjKey = (key.0.clone(), key.1);
             if let Some(mut slot) = self.states.get_mut(&obj_key) {
                 slot.versions.remove(&key.2);
             }
             self.dirty.remove(key);
-        }
-
-        for (_, _, path, _) in &victims {
             if let Err(e) = tokio::fs::remove_file(path).await {
                 tracing::error!("Failed to remove block file {:?}: {}", path, e);
+            }
+            for disk in &self.disks {
+                if path.starts_with(disk.path()) {
+                    disk.sub_used(*size);
+                    break;
+                }
             }
         }
 
         self.index.delete_many(&keys)?;
-
-        for disk in &self.disks {
-            let freed: u64 = victims
-                .iter()
-                .filter(|(_, _, path, _)| path.starts_with(disk.path()))
-                .map(|(_, _, _, size)| size)
-                .sum();
-            if freed > 0 {
-                disk.sub_used(freed);
-            }
-        }
 
         let m = frontcache_metrics::get();
         m.block_changes
