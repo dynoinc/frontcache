@@ -188,6 +188,14 @@ impl Cache {
             for path in &orphans {
                 if let Err(e) = std::fs::remove_file(path) {
                     tracing::error!("Failed to remove orphan {:?}: {}", path, e);
+                    if let Ok(meta) = std::fs::metadata(path) {
+                        for disk in &self.disks {
+                            if path.starts_with(disk.path()) {
+                                disk.add_used(meta.len());
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
