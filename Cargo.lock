@@ -715,6 +715,7 @@ name = "frontcache-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "frontcache-client",
  "frontcache-metrics",
@@ -726,6 +727,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tonic",
 ]
 
