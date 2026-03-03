@@ -454,12 +454,14 @@ impl Cache {
         self.dirty.insert(block_key);
 
         let block = Arc::new(block);
+        let block_size = block.size();
         if let Some(mut slot) = self.states.get_mut(obj_key) {
             slot.versions.insert(version.clone(), block);
         }
 
         let m = frontcache_metrics::get();
-        m.block_changes.add(1, &[KeyValue::new("action", "added")]);
+        m.disk_byte_changes
+            .add(block_size, &[KeyValue::new("action", "added")]);
 
         if let Some(requested) = requested_version
             && version != requested
@@ -505,6 +507,7 @@ impl Cache {
         }
 
         let mut deleted_keys = Vec::with_capacity(victims.len());
+        let mut deleted_bytes = 0u64;
         for (_, key, path, size) in &victims {
             let gone = match tokio::fs::remove_file(path).await {
                 Ok(()) => true,
@@ -528,6 +531,7 @@ impl Cache {
                     }
                 }
                 deleted_keys.push(key.clone());
+                deleted_bytes += size;
             }
         }
 
@@ -538,10 +542,8 @@ impl Cache {
         self.index.delete_many(&deleted_keys)?;
 
         let m = frontcache_metrics::get();
-        m.block_changes.add(
-            deleted_keys.len() as u64,
-            &[KeyValue::new("action", "removed")],
-        );
+        m.disk_byte_changes
+            .add(deleted_bytes, &[KeyValue::new("action", "evicted")]);
 
         Ok(())
     }

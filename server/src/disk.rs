@@ -75,7 +75,7 @@ pub fn select_disk(disks: &[Arc<Disk>]) -> &Arc<Disk> {
 }
 
 pub struct DiskMetricHandles {
-    _available: ObservableGauge<f64>,
+    _used: ObservableGauge<f64>,
     _total: ObservableGauge<f64>,
 }
 
@@ -83,14 +83,12 @@ pub fn register_disk_metrics(cache: Arc<Cache>) -> DiskMetricHandles {
     let meter = frontcache_metrics::meter();
 
     let c = cache.clone();
-    let _available = meter
-        .f64_observable_gauge("disk_available_bytes")
-        .with_description("Available disk space in bytes")
+    let _used = meter
+        .f64_observable_gauge("disk_used_bytes")
+        .with_description("Bytes currently stored in cache")
         .with_callback(move |observer| {
-            let (used, total) = c.disks().iter().fold((0u64, 0u64), |acc, d| {
-                (acc.0 + d.used(), acc.1 + d.capacity())
-            });
-            observer.observe(total.saturating_sub(used) as f64, &[]);
+            let used: u64 = c.disks().iter().map(|d| d.used()).sum();
+            observer.observe(used as f64, &[]);
         })
         .build();
 
@@ -104,7 +102,7 @@ pub fn register_disk_metrics(cache: Arc<Cache>) -> DiskMetricHandles {
         })
         .build();
 
-    DiskMetricHandles { _available, _total }
+    DiskMetricHandles { _used, _total }
 }
 
 pub fn start_flusher(cache: Arc<Cache>, shutdown: CancellationToken) -> JoinHandle<()> {

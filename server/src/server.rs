@@ -8,6 +8,7 @@ use frontcache_proto::{
     cache_service_server::{CacheService, CacheServiceServer},
 };
 use futures_util::Stream;
+use opentelemetry::KeyValue;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
@@ -92,9 +93,10 @@ impl CacheService for CacheServer {
         }
 
         let chunk_end = block_len.min(offset_in_block + length as usize);
-        frontcache_metrics::get()
-            .bytes_served
-            .add((chunk_end - offset_in_block) as u64, &[]);
+        frontcache_metrics::get().disk_byte_changes.add(
+            (chunk_end - offset_in_block) as u64,
+            &[KeyValue::new("action", "served")],
+        );
 
         let chunk_size = self.chunk_size;
         let stream: Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>> =
