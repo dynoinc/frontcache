@@ -35,6 +35,7 @@ Clients talk to the router to discover which server owns a block, then read dire
 |------|---------|-------------|
 | `--listen` | `0.0.0.0:8080` | Address to listen on |
 | `--cache-dirs` | `/tmp/frontcache:1GiB` | Cache directories with sizes (`path:size`, comma-separated for multiple) |
+| `--index-path` | `/var/lib/frontcache/index.db` | Path to the block index database |
 
 ### Environment Variables
 
@@ -55,9 +56,7 @@ rules:
     verbs: ["get", "list", "watch"]
 ```
 
-## Client Libraries
-
-### Rust Client
+## Rust Client
 
 ```rust
 use frontcache_client::CacheClient;
@@ -67,34 +66,13 @@ use futures::StreamExt;
 async fn main() -> Result<()> {
     let client = CacheClient::new("http://router:8081".to_string()).await?;
 
-    // Buffer full response in memory by collecting stream chunks.
-    let length = 1024 * 1024;
-    let mut stream = client.stream_range("s3://bucket/file", 0, length, Some("v1"))?;
-    let mut data = Vec::with_capacity(length as usize);
+    let mut stream = client.stream_range("s3://bucket/file", 0, 1024 * 1024, Some("v1"))?;
     while let Some(chunk) = stream.next().await {
-        data.extend_from_slice(&chunk?);
+        let bytes = chunk?;
+        // process bytes...
     }
-
-    println!("Read {} bytes", data.len());
     Ok(())
 }
-```
-
-### Python Client
-
-```python
-import asyncio
-import frontcache
-
-async def main():
-    client = await frontcache.connect("http://router:8081")
-
-    # Stream directly to disk.
-    with open("download.bin", "wb") as f:
-        async for chunk in client.stream_range("s3://bucket/file", offset=0, length=1024 * 1024, version="v1"):
-            f.write(chunk)
-
-asyncio.run(main())
 ```
 
 ## License
