@@ -72,7 +72,7 @@ jobs:
         key: amd64
 
     - name: Build AMD64 binaries
-      run: cargo build --release -p frontcache-server -p frontcache-router -p frontcache-client
+      run: cargo build --release -p frontcache-server -p frontcache-router -p frontcache-loadgen
 
     - name: Copy binaries
       run: |
@@ -127,7 +127,7 @@ jobs:
     - name: Build ARM64 binaries
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      run: cargo build --release -p frontcache-server -p frontcache-router -p frontcache-client --target aarch64-unknown-linux-gnu
+      run: cargo build --release -p frontcache-server -p frontcache-router -p frontcache-loadgen --target aarch64-unknown-linux-gnu
 
     - name: Copy binaries
       run: |
