@@ -87,6 +87,7 @@ enum Action {
     Wait(Shared<oneshot::Receiver<DownloadResult>>),
     Download {
         tx: oneshot::Sender<DownloadResult>,
+        rx: Shared<oneshot::Receiver<DownloadResult>>,
         had_versions: bool,
     },
 }
@@ -196,7 +197,7 @@ impl Cache {
     }
 
     pub async fn get(
-        &self,
+        self: &Arc<Self>,
         object: &str,
         offset: u64,
         version: Option<&str>,
@@ -225,8 +226,13 @@ impl Cache {
                     } else {
                         let (tx, rx) = oneshot::channel();
                         let had_versions = !slot.versions.is_empty();
-                        slot.inflight.insert(inflight_key, rx.shared());
-                        Action::Download { tx, had_versions }
+                        let shared = rx.shared();
+                        slot.inflight.insert(inflight_key, shared.clone());
+                        Action::Download {
+                            tx,
+                            rx: shared,
+                            had_versions,
+                        }
                     }
                 }
             }
@@ -234,10 +240,12 @@ impl Cache {
                 let (tx, rx) = oneshot::channel();
                 let inflight_key = version.map(|v| v.to_string());
                 let mut slot = Slot::new();
-                slot.inflight.insert(inflight_key, rx.shared());
+                let shared = rx.shared();
+                slot.inflight.insert(inflight_key, shared.clone());
                 entry.insert(slot);
                 Action::Download {
                     tx,
+                    rx: shared,
                     had_versions: false,
                 }
             }
@@ -271,10 +279,7 @@ impl Cache {
                 Err(e) => Err(CacheError::ReadBlock(Arc::new(e))),
             },
             Action::Wait(future) => {
-                let outcome = match future.await {
-                    Ok(arc_result) => arc_result,
-                    Err(_) => panic!("download task dropped for {obj_key:?}"),
-                };
+                let outcome = future.await.unwrap();
 
                 let m = frontcache_metrics::get();
                 m.cache_get_duration.record(
@@ -289,31 +294,45 @@ impl Cache {
                     Err(e) => Err(e.clone()),
                 }
             }
-            Action::Download { tx, had_versions } => {
-                let inflight_key = version.map(|v| v.to_string());
-                let result = self.download_block(&obj_key, version, had_versions).await;
+            Action::Download {
+                tx,
+                rx,
+                had_versions,
+            } => {
+                let cache = Arc::clone(self);
+                let obj_key_owned = obj_key.clone();
+                let version_owned = version.map(|v| v.to_string());
 
-                if let Some(mut slot) = self.states.get_mut(&obj_key) {
-                    slot.inflight.remove(&inflight_key);
-                }
+                tokio::spawn(async move {
+                    let result = cache
+                        .download_block(&obj_key_owned, version_owned.as_deref(), had_versions)
+                        .await;
 
-                let shared = Arc::new(match &result {
-                    Ok(fresh) => Ok(fresh.clone()),
-                    Err(e) => Err(e.clone()),
+                    if let Some(mut slot) = cache.states.get_mut(&obj_key_owned) {
+                        slot.inflight.remove(&version_owned);
+                    }
+
+                    let shared = Arc::new(match &result {
+                        Ok(fresh) => Ok(fresh.clone()),
+                        Err(e) => Err(e.clone()),
+                    });
+                    let _ = tx.send(shared);
                 });
 
-                let _ = tx.send(shared);
+                let outcome = rx.await.unwrap();
 
                 let m = frontcache_metrics::get();
-                let result_label = if result.is_ok() { "miss" } else { "error" };
+                let label = if outcome.is_ok() { "miss" } else { "error" };
                 m.cache_get_duration.record(
                     start.elapsed().as_secs_f64(),
-                    &[KeyValue::new("result", result_label)],
+                    &[KeyValue::new("result", label)],
                 );
 
-                match result {
-                    Ok(fresh) => Ok(CacheHit::Fresh { data: fresh.data }),
-                    Err(e) => Err(e),
+                match outcome.as_ref() {
+                    Ok(fresh) => Ok(CacheHit::Fresh {
+                        data: fresh.data.clone(),
+                    }),
+                    Err(e) => Err(e.clone()),
                 }
             }
         }
