@@ -15,7 +15,6 @@ use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
 const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
-const PREFETCH_BLOCKS: usize = 16;
 
 type MetricsChannel = frontcache_metrics::RpcMetricsService<Channel>;
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
@@ -24,6 +23,7 @@ struct ClientConfig {
     lookup_timeout: Duration,
     read_timeout: Duration,
     max_retries: usize,
+    prefetch_blocks: usize,
 }
 
 fn env_or<T: FromStr>(name: &str, default: T) -> T {
@@ -45,6 +45,7 @@ impl ClientConfig {
             lookup_timeout: Duration::from_millis(env_or("FRONTCACHE_LOOKUP_TIMEOUT_MS", 500)),
             read_timeout: Duration::from_millis(env_or("FRONTCACHE_READ_TIMEOUT_MS", 5000)),
             max_retries: env_or("FRONTCACHE_MAX_RETRIES", 3),
+            prefetch_blocks: env_or("FRONTCACHE_PREFETCH_BLOCKS", 16),
         }
     }
 }
@@ -143,7 +144,7 @@ impl CacheClient {
                 }
             },
         ))
-        .buffered(PREFETCH_BLOCKS)
+        .buffered(self.config.prefetch_blocks)
         .try_flatten();
 
         Ok(Box::pin(stream))

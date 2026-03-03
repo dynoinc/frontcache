@@ -5,14 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use opentelemetry::metrics::ObservableGauge;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
-use tokio::time::{Duration, sleep};
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 use crate::cache::Cache;
-
-const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
-pub(crate) const MAX_UTILIZATION_PERCENT: u64 = 95;
-pub(crate) const MIN_UTILIZATION_PERCENT: u64 = 90;
 
 pub struct Disk {
     path: PathBuf,
@@ -29,8 +25,10 @@ impl Disk {
             path,
             capacity,
             used: AtomicU64::new(0),
-            low_watermark: capacity * MIN_UTILIZATION_PERCENT / 100,
-            high_watermark: capacity * MAX_UTILIZATION_PERCENT / 100,
+            low_watermark: capacity * crate::env_or("FRONTCACHE_MIN_UTILIZATION_PERCENT", 90u64)
+                / 100,
+            high_watermark: capacity * crate::env_or("FRONTCACHE_MAX_UTILIZATION_PERCENT", 95u64)
+                / 100,
             evict_lock: Arc::new(Semaphore::new(1)),
         })
     }
@@ -110,11 +108,13 @@ pub fn register_disk_metrics(cache: Arc<Cache>) -> DiskMetricHandles {
 }
 
 pub fn start_flusher(cache: Arc<Cache>, shutdown: CancellationToken) -> JoinHandle<()> {
+    let interval =
+        std::time::Duration::from_secs(crate::env_or("FRONTCACHE_FLUSH_INTERVAL_SECS", 60u64));
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => break,
-                _ = sleep(FLUSH_INTERVAL) => { cache.flush_last_accessed(); }
+                _ = sleep(interval) => { cache.flush_last_accessed(); }
             }
         }
     })

@@ -15,15 +15,17 @@ use crate::{
     store::StoreError,
 };
 
-const CHUNK_SIZE: usize = 256 * 1024;
-
 pub struct CacheServer {
     cache: Arc<Cache>,
+    chunk_size: usize,
 }
 
 impl CacheServer {
     pub fn new(cache: Arc<Cache>) -> Self {
-        Self { cache }
+        Self {
+            cache,
+            chunk_size: crate::env_or("FRONTCACHE_STREAM_CHUNK_SIZE", 256 * 1024),
+        }
     }
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
@@ -94,6 +96,7 @@ impl CacheService for CacheServer {
             .bytes_served
             .add((chunk_end - offset_in_block) as u64, &[]);
 
+        let chunk_size = self.chunk_size;
         let stream: Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>> =
             match hit {
                 CacheHit::Disk { reader, .. } => Box::pin(futures_util::stream::try_unfold(
@@ -102,7 +105,7 @@ impl CacheService for CacheServer {
                         if pos >= chunk_end {
                             return Ok(None);
                         }
-                        let len = CHUNK_SIZE.min(chunk_end - pos);
+                        let len = chunk_size.min(chunk_end - pos);
                         let chunk = reader
                             .read_chunk(pos as u64, len)
                             .await
@@ -126,7 +129,7 @@ impl CacheService for CacheServer {
                             if pos >= chunk_end {
                                 return None;
                             }
-                            let len = CHUNK_SIZE.min(chunk_end - pos);
+                            let len = chunk_size.min(chunk_end - pos);
                             let chunk = data.slice(pos..pos + len);
                             Some((Ok(ReadRangeResponse { data: chunk }), pos + len))
                         }
