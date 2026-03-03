@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use frontcache_server::{
     cache::Cache,
-    disk::{Disk, start_flusher, start_purger},
+    disk::{Disk, start_flusher, start_metrics},
     index::Index,
     server::CacheServer,
     store::Store,
@@ -84,8 +84,9 @@ async fn main() -> Result<()> {
     let cache = Arc::new(Cache::new(index.clone(), store, disks));
 
     cache.init_from_disk()?;
+
     let shutdown = CancellationToken::new();
-    let purger = start_purger(cache.clone(), shutdown.clone());
+    let metrics = start_metrics(cache.clone(), shutdown.clone());
     let flusher = start_flusher(cache.clone(), shutdown.clone());
 
     tracing::info!("Starting frontcache server on {}", args.listen);
@@ -93,7 +94,7 @@ async fn main() -> Result<()> {
 
     tracing::info!("Shutting down");
     shutdown.cancel();
-    let _ = purger.await;
+    let _ = metrics.await;
     let _ = flusher.await;
     cache.flush_last_accessed();
     frontcache_metrics::shutdown()?;

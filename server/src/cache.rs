@@ -356,7 +356,7 @@ impl Cache {
     }
 
     async fn download_block(
-        &self,
+        self: &Arc<Self>,
         obj_key: &ObjKey,
         requested_version: Option<&str>,
         had_versions: bool,
@@ -418,6 +418,20 @@ impl Cache {
         };
 
         disk.add_used(block.size());
+        if disk.used() > disk.high_watermark()
+            && let Ok(permit) = disk.evict_lock().try_acquire_owned()
+        {
+            let cache = Arc::clone(self);
+            let disk = Arc::clone(disk);
+            tokio::spawn(async move {
+                let _permit = permit;
+                let bytes_to_reclaim = disk.used().saturating_sub(disk.low_watermark());
+                if let Err(e) = cache.purge_bytes_from(disk.path(), bytes_to_reclaim).await {
+                    tracing::error!("Eviction failed for {:?}: {}", disk.path(), e);
+                }
+            });
+        }
+
         self.dirty.insert(block_key);
 
         let block = Arc::new(block);
@@ -440,62 +454,75 @@ impl Cache {
         Ok(FreshHit { data })
     }
 
-    pub async fn purge_many_from(&self, cache_dir: &Path, count: usize) -> Result<()> {
-        let mut heap = std::collections::BinaryHeap::with_capacity(count + 1);
-
+    pub async fn purge_bytes_from(&self, cache_dir: &Path, bytes_to_reclaim: u64) -> Result<()> {
+        let mut candidates: Vec<(u64, BlockKey, PathBuf, u64)> = Vec::new();
         for entry in self.states.iter() {
             let obj_key = entry.key();
             for (version, block) in &entry.value().versions {
-                if !block.path().starts_with(cache_dir) {
-                    continue;
-                }
-                let ts = block.last_accessed();
-                let item = (
-                    ts,
-                    (obj_key.0.clone(), obj_key.1, version.clone()),
-                    block.path().to_path_buf(),
-                    block.size(),
-                );
-
-                if heap.len() < count {
-                    heap.push(item);
-                } else if let Some(mut top) = heap.peek_mut()
-                    && ts < top.0
-                {
-                    *top = item;
+                if block.path().starts_with(cache_dir) {
+                    candidates.push((
+                        block.last_accessed(),
+                        (obj_key.0.clone(), obj_key.1, version.clone()),
+                        block.path().to_path_buf(),
+                        block.size(),
+                    ));
                 }
             }
         }
+        candidates.sort_unstable_by_key(|c| c.0);
 
-        let victims: Vec<_> = heap.into_iter().collect();
+        let mut victims: Vec<(u64, BlockKey, PathBuf, u64)> = Vec::new();
+        let mut total_bytes = 0u64;
+        for c in candidates {
+            if total_bytes >= bytes_to_reclaim {
+                break;
+            }
+            total_bytes += c.3;
+            victims.push(c);
+        }
+
         if victims.is_empty() {
             return Ok(());
         }
 
-        let mut keys = Vec::with_capacity(victims.len());
+        let mut deleted_keys = Vec::with_capacity(victims.len());
         for (_, key, path, size) in &victims {
-            keys.push(key.clone());
-            let obj_key: ObjKey = (key.0.clone(), key.1);
-            if let Some(mut slot) = self.states.get_mut(&obj_key) {
-                slot.versions.remove(&key.2);
-            }
-            self.dirty.remove(key);
-            if let Err(e) = tokio::fs::remove_file(path).await {
-                tracing::error!("Failed to remove block file {:?}: {}", path, e);
-            }
-            for disk in &self.disks {
-                if path.starts_with(disk.path()) {
-                    disk.sub_used(*size);
-                    break;
+            let gone = match tokio::fs::remove_file(path).await {
+                Ok(()) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Err(e) => {
+                    tracing::error!("Failed to remove block file {:?}: {}", path, e);
+                    false
                 }
+            };
+
+            if gone {
+                let obj_key: ObjKey = (key.0.clone(), key.1);
+                if let Some(mut slot) = self.states.get_mut(&obj_key) {
+                    slot.versions.remove(&key.2);
+                }
+                self.dirty.remove(key);
+                for disk in &self.disks {
+                    if path.starts_with(disk.path()) {
+                        disk.sub_used(*size);
+                        break;
+                    }
+                }
+                deleted_keys.push(key.clone());
             }
         }
 
-        self.index.delete_many(&keys)?;
+        if deleted_keys.is_empty() {
+            return Ok(());
+        }
+
+        self.index.delete_many(&deleted_keys)?;
 
         let m = frontcache_metrics::get();
-        m.block_changes
-            .add(keys.len() as u64, &[KeyValue::new("action", "removed")]);
+        m.block_changes.add(
+            deleted_keys.len() as u64,
+            &[KeyValue::new("action", "removed")],
+        );
 
         Ok(())
     }

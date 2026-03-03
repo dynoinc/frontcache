@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use frontcache_server::{
     cache::Cache,
-    disk::{Disk, start_flusher, start_purger},
+    disk::{Disk, start_flusher, start_metrics},
     index::Index,
     store::Store,
 };
@@ -267,15 +267,15 @@ async fn shutdown_stops_background_tasks() -> Result<()> {
     cache.init_from_disk()?;
 
     let token = CancellationToken::new();
-    let purger = start_purger(cache.clone(), token.clone());
+    let metrics = start_metrics(cache.clone(), token.clone());
     let flusher = start_flusher(cache.clone(), token.clone());
 
     token.cancel();
 
-    tokio::time::timeout(Duration::from_secs(1), purger)
+    tokio::time::timeout(Duration::from_secs(1), metrics)
         .await
-        .expect("purger did not stop in time")
-        .expect("purger panicked");
+        .expect("metrics task did not stop in time")
+        .expect("metrics task panicked");
 
     tokio::time::timeout(Duration::from_secs(1), flusher)
         .await
