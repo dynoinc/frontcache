@@ -102,6 +102,33 @@ impl Store {
         Ok(backend)
     }
 
+    pub async fn head(&self, key: &str) -> Result<String, StoreError> {
+        let (provider, bucket, path) = Self::parse_key(key)?;
+        let backend = self.get_backend(&provider, &bucket).await?;
+        let obj_path = ObjPath::from(path);
+
+        let opts = GetOptions {
+            head: true,
+            ..Default::default()
+        };
+        let result = backend
+            .get_opts(&obj_path, opts)
+            .await
+            .map_err(|e| StoreError::from_object_store(e, key))?;
+
+        Ok(Self::extract_version(&result))
+    }
+
+    fn extract_version(result: &object_store::GetResult) -> String {
+        result
+            .attributes
+            .get(&object_store::Attribute::Metadata(VERSION_HEADER.into()))
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| result.meta.e_tag.clone().unwrap_or_default())
+            .trim_matches('"')
+            .to_string()
+    }
+
     pub async fn read_range(
         &self,
         key: &str,
@@ -136,13 +163,7 @@ impl Store {
         );
 
         let get_result = result.map_err(|e| StoreError::from_object_store(e, key))?;
-        let version = get_result
-            .attributes
-            .get(&object_store::Attribute::Metadata(VERSION_HEADER.into()))
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| get_result.meta.e_tag.clone().unwrap_or_default())
-            .trim_matches('"')
-            .to_string();
+        let version = Self::extract_version(&get_result);
 
         let data = get_result
             .bytes()

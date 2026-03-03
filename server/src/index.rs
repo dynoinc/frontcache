@@ -25,7 +25,7 @@ pub enum IndexError {
     Serialization(#[from] serde_json::Error),
 }
 
-pub type BlockKey = (String, u64);
+pub type BlockKey = (String, u64, String);
 
 const BLOCKS_TABLE: TableDefinition<BlockKey, &[u8]> = TableDefinition::new("blocks");
 const LAST_ACCESSED_TABLE: TableDefinition<BlockKey, u64> = TableDefinition::new("last_accessed");
@@ -64,9 +64,9 @@ impl Index {
         write_txn.set_durability(Durability::None)?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
-            for ((object, offset), entry) in entries {
+            for ((object, offset, version), entry) in entries {
                 let value = serde_json::to_vec(&entry)?;
-                table.insert((object, offset), value.as_slice())?;
+                table.insert((object, offset, version), value.as_slice())?;
             }
         }
         write_txn.commit()?;
@@ -114,10 +114,17 @@ impl Index {
         let mut records = Vec::new();
         for item in blocks_table.iter()? {
             let (bk, bv) = item?;
-            let block_key: BlockKey = (bk.value().0.to_string(), bk.value().1);
+            let block_key: BlockKey = (
+                bk.value().0.to_string(),
+                bk.value().1,
+                bk.value().2.to_string(),
+            );
 
             while let Some(Ok((k, _))) = la_iter.peek() {
-                if (k.value().0.as_str(), k.value().1) < (block_key.0.as_str(), block_key.1) {
+                let kv = k.value();
+                if (kv.0.as_str(), kv.1, kv.2.as_str())
+                    < (block_key.0.as_str(), block_key.1, block_key.2.as_str())
+                {
                     la_iter.next();
                 } else {
                     break;
@@ -125,11 +132,14 @@ impl Index {
             }
 
             let mut last_accessed = None;
-            if let Some(Ok((k, _))) = la_iter.peek()
-                && (k.value().0.as_str(), k.value().1) == (block_key.0.as_str(), block_key.1)
-            {
-                let (_, v) = la_iter.next().unwrap()?;
-                last_accessed = Some(v.value());
+            if let Some(Ok((k, _))) = la_iter.peek() {
+                let kv = k.value();
+                if (kv.0.as_str(), kv.1, kv.2.as_str())
+                    == (block_key.0.as_str(), block_key.1, block_key.2.as_str())
+                {
+                    let (_, v) = la_iter.next().unwrap()?;
+                    last_accessed = Some(v.value());
+                }
             }
 
             let entry: BlockEntry = serde_json::from_slice(bv.value())?;

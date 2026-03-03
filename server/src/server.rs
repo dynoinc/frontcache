@@ -59,29 +59,24 @@ impl CacheService for CacheServer {
         let offset = req.offset;
         let length = req.length;
 
-        let hit = self.cache.get(&req.key, offset).await.map_err(|e| {
-            let msg = format!("{:?}", e);
-            match &e {
-                CacheError::StoreRead(store_err) => match store_err.as_ref() {
-                    StoreError::InvalidKey(_) | StoreError::UnsupportedProvider(_) => {
-                        Status::invalid_argument(msg)
-                    }
-                    StoreError::NotFound(_) => Status::not_found(msg),
-                    StoreError::Backend(_) => Status::internal(msg),
-                },
-                _ => Status::internal(msg),
-            }
-        })?;
-
-        if let Some(version) = &req.version
-            && hit.version() != version
-        {
-            return Err(Status::failed_precondition(format!(
-                "version mismatch: cached={}, requested={}",
-                hit.version(),
-                version
-            )));
-        }
+        let hit = self
+            .cache
+            .get(&req.key, offset, req.version.as_deref())
+            .await
+            .map_err(|e| {
+                let msg = format!("{:?}", e);
+                match &e {
+                    CacheError::StoreRead(store_err) => match store_err.as_ref() {
+                        StoreError::InvalidKey(_) | StoreError::UnsupportedProvider(_) => {
+                            Status::invalid_argument(msg)
+                        }
+                        StoreError::NotFound(_) => Status::not_found(msg),
+                        StoreError::Backend(_) => Status::internal(msg),
+                    },
+                    CacheError::VersionMismatch { .. } => Status::failed_precondition(msg),
+                    _ => Status::internal(msg),
+                }
+            })?;
 
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let offset_in_block = (offset - block_offset) as usize;

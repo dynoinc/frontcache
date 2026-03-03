@@ -27,7 +27,7 @@ server:
 loadgen:
   fileCount: 10
   fileSizeMB: 50
-  sleepSeconds: "0.1"
+  sleepMs: 100
 
 minio:
   rootUser: minioadmin

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use dashmap::{DashMap, DashSet, mapref::entry::Entry};
@@ -33,28 +33,16 @@ pub enum CacheError {
     StoreRead(#[source] Arc<StoreError>),
     #[error("Failed to read block from disk")]
     ReadBlock(#[source] Arc<anyhow::Error>),
+    #[error("Version mismatch: upstream={upstream}, requested={requested}")]
+    VersionMismatch { upstream: String, requested: String },
 }
 
 pub enum CacheHit {
-    Disk {
-        reader: BlockReader,
-        version: String,
-        size: u64,
-    },
-    Fresh {
-        data: Bytes,
-        version: String,
-    },
+    Disk { reader: BlockReader, size: u64 },
+    Fresh { data: Bytes },
 }
 
 impl CacheHit {
-    pub fn version(&self) -> &str {
-        match self {
-            CacheHit::Disk { version, .. } => version,
-            CacheHit::Fresh { version, .. } => version,
-        }
-    }
-
     pub fn size(&self) -> u64 {
         match self {
             CacheHit::Disk { size, .. } => *size,
@@ -66,22 +54,28 @@ impl CacheHit {
 #[derive(Clone)]
 struct FreshHit {
     data: Bytes,
-    version: String,
 }
 
 type DownloadResult = Arc<Result<FreshHit, CacheError>>;
 
-enum CacheState {
-    Writing {
-        result: Shared<oneshot::Receiver<DownloadResult>>,
-    },
-    Ready {
-        block: Arc<Block>,
-    },
+struct Slot {
+    versions: BTreeMap<String, Arc<Block>>,
+    inflight: BTreeMap<Option<String>, Shared<oneshot::Receiver<DownloadResult>>>,
 }
 
+impl Slot {
+    fn new() -> Self {
+        Self {
+            versions: BTreeMap::new(),
+            inflight: BTreeMap::new(),
+        }
+    }
+}
+
+type ObjKey = (String, u64);
+
 pub struct Cache {
-    states: DashMap<BlockKey, CacheState>,
+    states: DashMap<ObjKey, Slot>,
     dirty: DashSet<BlockKey>,
     index: Arc<Index>,
     store: Arc<Store>,
@@ -91,7 +85,10 @@ pub struct Cache {
 enum Action {
     Read(Arc<Block>),
     Wait(Shared<oneshot::Receiver<DownloadResult>>),
-    Download(oneshot::Sender<DownloadResult>),
+    Download {
+        tx: oneshot::Sender<DownloadResult>,
+        had_versions: bool,
+    },
 }
 
 fn walk_blk_files(dir: &Path) -> Vec<PathBuf> {
@@ -155,7 +152,10 @@ impl Cache {
     }
 
     pub fn block_count(&self) -> usize {
-        self.states.len()
+        self.states
+            .iter()
+            .map(|entry| entry.value().versions.len())
+            .sum()
     }
 
     pub fn init_from_disk(&self) -> Result<()> {
@@ -178,12 +178,12 @@ impl Cache {
             indexed_paths.insert(block_path.clone());
 
             let last_accessed = record.last_accessed.unwrap_or_else(Block::now);
-            let block = Block::new(
+            let block = Arc::new(Block::new(
                 block_path.clone(),
                 record.entry.version.clone(),
                 record.entry.size,
                 last_accessed,
-            );
+            ));
 
             for disk in &self.disks {
                 if block_path.starts_with(disk.path()) {
@@ -192,12 +192,13 @@ impl Cache {
                 }
             }
 
-            self.states.insert(
-                block_key,
-                CacheState::Ready {
-                    block: Arc::new(block),
-                },
-            );
+            let obj_key = (block_key.0, block_key.1);
+            let version = block_key.2;
+            self.states
+                .entry(obj_key)
+                .or_insert_with(Slot::new)
+                .versions
+                .insert(version, block);
         }
 
         if !cleanup_keys.is_empty() {
@@ -215,31 +216,55 @@ impl Cache {
             }
         }
 
-        tracing::info!("Indexed {} blocks from disk", self.states.len());
+        tracing::info!("Indexed {} blocks from disk", self.block_count());
         Ok(())
     }
 
-    pub async fn get(&self, object: &str, offset: u64) -> Result<CacheHit, CacheError> {
+    pub async fn get(
+        &self,
+        object: &str,
+        offset: u64,
+        version: Option<&str>,
+    ) -> Result<CacheHit, CacheError> {
         let start = Instant::now();
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
-        let key = (object.to_string(), block_offset);
+        let obj_key: ObjKey = (object.to_string(), block_offset);
 
-        let action = match self.states.entry(key.clone()) {
-            Entry::Occupied(entry) => match entry.get() {
-                CacheState::Ready { block } => {
-                    let block = block.clone();
+        let action = match self.states.entry(obj_key.clone()) {
+            Entry::Occupied(mut entry) => {
+                let slot = entry.get_mut();
+
+                let block = match version {
+                    Some(v) => slot.versions.get(v).cloned(),
+                    None => slot.versions.values().next().cloned(),
+                };
+                if let Some(block) = block {
                     block.record_access();
-                    self.dirty.insert(key.clone());
+                    self.dirty
+                        .insert((obj_key.0.clone(), obj_key.1, block.version().to_string()));
                     Action::Read(block)
+                } else {
+                    let inflight_key = version.map(|v| v.to_string());
+                    if let Some(shared) = slot.inflight.get(&inflight_key) {
+                        Action::Wait(shared.clone())
+                    } else {
+                        let (tx, rx) = oneshot::channel();
+                        let had_versions = !slot.versions.is_empty();
+                        slot.inflight.insert(inflight_key, rx.shared());
+                        Action::Download { tx, had_versions }
+                    }
                 }
-                CacheState::Writing { result } => Action::Wait(result.clone()),
-            },
+            }
             Entry::Vacant(entry) => {
                 let (tx, rx) = oneshot::channel();
-                entry.insert(CacheState::Writing {
-                    result: rx.shared(),
-                });
-                Action::Download(tx)
+                let inflight_key = version.map(|v| v.to_string());
+                let mut slot = Slot::new();
+                slot.inflight.insert(inflight_key, rx.shared());
+                entry.insert(slot);
+                Action::Download {
+                    tx,
+                    had_versions: false,
+                }
             }
         };
 
@@ -253,7 +278,6 @@ impl Cache {
                     );
                     Ok(CacheHit::Disk {
                         reader,
-                        version: block.version().to_owned(),
                         size: block.size(),
                     })
                 }
@@ -261,30 +285,20 @@ impl Cache {
                     if e.downcast_ref::<std::io::Error>()
                         .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
                 {
-                    tracing::warn!("Block file missing for {:?}, re-downloading", key);
-                    let stale_path = block.path().clone();
-                    let evicted = match self.states.entry(key.clone()) {
-                        Entry::Occupied(e)
-                            if matches!(
-                                e.get(),
-                                CacheState::Ready { block: b } if *b.path() == stale_path
-                            ) =>
-                        {
-                            Some(e.remove_entry().1)
-                        }
-                        _ => None,
-                    };
-                    if let Some(CacheState::Ready { block: stale }) = evicted {
-                        self.evict_from_disk(&key, &stale);
-                    }
-                    Box::pin(self.get(object, offset)).await
+                    tracing::warn!(
+                        "Block file missing for {:?} version={}, re-downloading",
+                        obj_key,
+                        block.version()
+                    );
+                    self.evict_version(&obj_key, block.version(), &block);
+                    Box::pin(self.get(object, offset, version)).await
                 }
                 Err(e) => Err(CacheError::ReadBlock(Arc::new(e))),
             },
             Action::Wait(future) => {
                 let outcome = match future.await {
                     Ok(arc_result) => arc_result,
-                    Err(_) => panic!("download task dropped for {key:?}"),
+                    Err(_) => panic!("download task dropped for {obj_key:?}"),
                 };
 
                 let m = frontcache_metrics::get();
@@ -296,130 +310,155 @@ impl Cache {
                 match outcome.as_ref() {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
-                        version: fresh.version.clone(),
                     }),
                     Err(e) => Err(e.clone()),
                 }
             }
-            Action::Download(tx) => {
-                let result = self.download_block(&key).await;
+            Action::Download { tx, had_versions } => {
+                let inflight_key = version.map(|v| v.to_string());
+                let result = self.download_block(&obj_key, version, had_versions).await;
+
+                if let Some(mut slot) = self.states.get_mut(&obj_key) {
+                    slot.inflight.remove(&inflight_key);
+                }
 
                 let shared = Arc::new(match &result {
                     Ok(fresh) => Ok(fresh.clone()),
-                    Err(e) => {
-                        self.states.remove(&key);
-                        Err(e.clone())
-                    }
+                    Err(e) => Err(e.clone()),
                 });
-
-                if result.is_ok() {
-                    let m = frontcache_metrics::get();
-                    m.block_changes.add(1, &[KeyValue::new("action", "added")]);
-                }
 
                 let _ = tx.send(shared);
 
                 let m = frontcache_metrics::get();
+                let result_label = if result.is_ok() { "miss" } else { "error" };
                 m.cache_get_duration.record(
                     start.elapsed().as_secs_f64(),
-                    &[KeyValue::new("result", "miss")],
+                    &[KeyValue::new("result", result_label)],
                 );
 
                 match result {
-                    Ok(fresh) => Ok(CacheHit::Fresh {
-                        data: fresh.data,
-                        version: fresh.version,
-                    }),
+                    Ok(fresh) => Ok(CacheHit::Fresh { data: fresh.data }),
                     Err(e) => Err(e),
                 }
             }
         }
     }
 
-    fn evict_from_disk(&self, key: &BlockKey, block: &Block) {
+    fn evict_version(&self, obj_key: &ObjKey, version: &str, block: &Block) {
         for disk in &self.disks {
             if block.path().starts_with(disk.path()) {
                 disk.sub_used(block.size());
                 break;
             }
         }
-        if let Err(e) = self.index.delete_many(std::slice::from_ref(key)) {
-            tracing::error!("Failed to delete index entry for {:?}: {}", key, e);
+        let block_key: BlockKey = (obj_key.0.clone(), obj_key.1, version.to_string());
+        if let Err(e) = self.index.delete_many(std::slice::from_ref(&block_key)) {
+            tracing::error!("Failed to delete index entry for {:?}: {}", block_key, e);
         }
+        if let Some(mut slot) = self.states.get_mut(obj_key) {
+            slot.versions.remove(version);
+        }
+        self.dirty.remove(&block_key);
     }
 
-    async fn download_block(&self, key: &BlockKey) -> Result<FreshHit, CacheError> {
-        tracing::info!("Downloading block {key:?}");
+    async fn download_block(
+        &self,
+        obj_key: &ObjKey,
+        requested_version: Option<&str>,
+        had_versions: bool,
+    ) -> Result<FreshHit, CacheError> {
+        let (object, block_offset) = obj_key;
+        tracing::info!("Downloading block {}:{}", object, block_offset);
+
+        // HEAD check: only when we have cached versions but not the requested one.
+        // Cold misses skip HEAD — high chance the requested version is the current one.
+        if had_versions && let Some(requested) = requested_version {
+            let upstream_ver = self
+                .store
+                .head(object)
+                .await
+                .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
+            if upstream_ver != requested {
+                return Err(CacheError::VersionMismatch {
+                    upstream: upstream_ver,
+                    requested: requested.to_string(),
+                });
+            }
+        }
 
         let disk = select_disk(&self.disks);
 
-        let (object_key, offset) = key;
-        let read_result = match self.store.read_range(object_key, *offset, BLOCK_SIZE).await {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(CacheError::StoreRead(Arc::new(e)));
-            }
-        };
+        let read_result = self
+            .store
+            .read_range(object, *block_offset, BLOCK_SIZE)
+            .await
+            .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
 
         let data = read_result.data.clone();
+        let version = read_result.version.clone();
 
-        let pending =
-            match PendingBlock::prepare(disk.path(), read_result.data, read_result.version.clone())
-                .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    return Err(CacheError::CreateFile(Arc::new(e)));
-                }
-            };
+        let pending = PendingBlock::prepare(disk.path(), read_result.data, version.clone())
+            .await
+            .map_err(|e| CacheError::CreateFile(Arc::new(e)))?;
 
-        if let Err(e) = self.index.upsert([(
-            key.clone(),
-            BlockEntry {
-                path: pending.path().to_string_lossy().to_string(),
-                version: read_result.version.clone(),
-                size: pending.size(),
-            },
-        )]) {
-            return Err(CacheError::IndexUpdate(Arc::new(e)));
-        }
+        let block_key: BlockKey = (object.clone(), *block_offset, version.clone());
+        self.index
+            .upsert([(
+                block_key.clone(),
+                BlockEntry {
+                    path: pending.path().to_string_lossy().to_string(),
+                    version: version.clone(),
+                    size: pending.size(),
+                },
+            )])
+            .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
 
         let block = match pending.persist() {
             Ok(b) => b,
             Err(e) => {
-                if let Err(idx_err) = self.index.delete_many(std::slice::from_ref(key)) {
-                    tracing::error!("Failed to rollback index entry for {:?}: {}", key, idx_err);
+                if let Err(idx_err) = self.index.delete_many(&[block_key]) {
+                    tracing::error!("Failed to rollback index entry: {}", idx_err);
                 }
                 return Err(CacheError::CreateFile(Arc::new(e)));
             }
         };
 
         disk.add_used(block.size());
-        self.dirty.insert(key.clone());
-        self.states.insert(
-            key.clone(),
-            CacheState::Ready {
-                block: Arc::new(block),
-            },
-        );
+        self.dirty.insert(block_key);
 
-        Ok(FreshHit {
-            data,
-            version: read_result.version,
-        })
+        let block = Arc::new(block);
+        if let Some(mut slot) = self.states.get_mut(obj_key) {
+            slot.versions.insert(version.clone(), block);
+        }
+
+        let m = frontcache_metrics::get();
+        m.block_changes.add(1, &[KeyValue::new("action", "added")]);
+
+        if let Some(requested) = requested_version
+            && version != requested
+        {
+            return Err(CacheError::VersionMismatch {
+                upstream: version,
+                requested: requested.to_string(),
+            });
+        }
+
+        Ok(FreshHit { data })
     }
 
     pub async fn purge_many_from(&self, cache_dir: &Path, count: usize) -> Result<()> {
         let mut heap = std::collections::BinaryHeap::with_capacity(count + 1);
 
         for entry in self.states.iter() {
-            if let CacheState::Ready { block } = entry.value()
-                && block.path().starts_with(cache_dir)
-            {
+            let obj_key = entry.key();
+            for (version, block) in &entry.value().versions {
+                if !block.path().starts_with(cache_dir) {
+                    continue;
+                }
                 let ts = block.last_accessed();
                 let item = (
                     ts,
-                    entry.key().clone(),
+                    (obj_key.0.clone(), obj_key.1, version.clone()),
                     block.path().to_path_buf(),
                     block.size(),
                 );
@@ -442,7 +481,10 @@ impl Cache {
         let keys: Vec<BlockKey> = victims.iter().map(|(_, key, _, _)| key.clone()).collect();
 
         for key in &keys {
-            self.states.remove(key);
+            let obj_key: ObjKey = (key.0.clone(), key.1);
+            if let Some(mut slot) = self.states.get_mut(&obj_key) {
+                slot.versions.remove(&key.2);
+            }
             self.dirty.remove(key);
         }
 
@@ -486,12 +528,10 @@ impl Cache {
         let entries: Vec<_> = dirty_keys
             .into_iter()
             .filter_map(|key| {
-                let entry = self.states.get(&key)?;
-                if let CacheState::Ready { block } = entry.value() {
-                    Some((key, block.last_accessed()))
-                } else {
-                    None
-                }
+                let obj_key: ObjKey = (key.0.clone(), key.1);
+                let slot = self.states.get(&obj_key)?;
+                let block = slot.versions.get(&key.2)?;
+                Some((key, block.last_accessed()))
             })
             .collect();
 

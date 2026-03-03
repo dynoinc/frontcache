@@ -11,12 +11,8 @@ check:
     cargo check --all-targets --all-features
     cargo clippy --all-targets --all-features -- -D warnings
     cargo test --all-targets --all-features
-    cd py && uv run maturin build
 
 # Build docker image for local k8s testing (debug, cross-compiled for Linux)
 docker-build:
-    cargo zigbuild --target aarch64-unknown-linux-gnu -p frontcache-server -p frontcache-router
-    cd py && uv run maturin build --target aarch64-unknown-linux-gnu --zig -i python3.12
-    mkdir -p target/aarch64-unknown-linux-gnu/debug/wheels
-    cp target/wheels/frontcache-*linux*.whl target/aarch64-unknown-linux-gnu/debug/wheels/
+    cargo zigbuild --target aarch64-unknown-linux-gnu -p frontcache-server -p frontcache-router -p frontcache-loadgen
     docker build -f Dockerfile -t frontcache:dev target/aarch64-unknown-linux-gnu/debug/

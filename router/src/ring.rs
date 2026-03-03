@@ -98,7 +98,6 @@ fn straw2_select_top(vp: u64, servers: &[String]) -> [u16; REPLICAS] {
     let mut top = [(0u64, u16::MAX); REPLICAS];
     for (i, server) in servers.iter().enumerate() {
         let h = xxh3_64_with_seed(server.as_bytes(), vp);
-        // Insert into sorted top-K (descending by hash)
         if let Some(pos) = top.iter().position(|&(th, _)| h > th) {
             top.copy_within(pos..REPLICAS - 1, pos + 1);
             top[pos] = (h, i as u16);

@@ -37,9 +37,6 @@ jobs:
     - name: Setup Just
       uses: extractions/setup-just@v2
 
-    - name: Setup uv
-      uses: astral-sh/setup-uv@v5
-
     - name: Run just check
       run: just check
 
@@ -74,23 +71,14 @@ jobs:
       with:
         key: amd64
 
-    - name: Setup uv
-      uses: astral-sh/setup-uv@v5
-
     - name: Build AMD64 binaries
-      run: cargo build --release -p frontcache-server -p frontcache-router
+      run: cargo build --release -p frontcache-server -p frontcache-router -p frontcache-client
 
-    - name: Build AMD64 wheel
-      run: |
-        rm -f target/wheels/frontcache-*linux*.whl
-        cd py && uv run maturin build --release
-
-    - name: Copy binaries and wheel
+    - name: Copy binaries
       run: |
         cp target/release/frontcache-server .
         cp target/release/frontcache-router .
-        mkdir -p wheels
-        cp target/wheels/frontcache-*manylinux*.whl wheels/
+        cp target/release/frontcache-loadgen .
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -136,27 +124,16 @@ jobs:
       with:
         key: arm64
 
-    - name: Setup uv
-      uses: astral-sh/setup-uv@v5
-
     - name: Build ARM64 binaries
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      run: cargo build --release -p frontcache-server -p frontcache-router --target aarch64-unknown-linux-gnu
+      run: cargo build --release -p frontcache-server -p frontcache-router -p frontcache-client --target aarch64-unknown-linux-gnu
 
-    - name: Build ARM64 wheel
-      env:
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      run: |
-        rm -f target/wheels/frontcache-*linux*.whl
-        cd py && uv run maturin build --release --target aarch64-unknown-linux-gnu -i python3.12
-
-    - name: Copy binaries and wheel
+    - name: Copy binaries
       run: |
         cp target/aarch64-unknown-linux-gnu/release/frontcache-server .
         cp target/aarch64-unknown-linux-gnu/release/frontcache-router .
-        mkdir -p wheels
-        cp target/wheels/frontcache-*manylinux*.whl wheels/
+        cp target/aarch64-unknown-linux-gnu/release/frontcache-loadgen .
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3

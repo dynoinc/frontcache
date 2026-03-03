@@ -1,0 +1,16 @@
+[package]
+name = "frontcache-loadgen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frontcache-client = { path = "../client" }
+frontcache-metrics = { path = "../metrics" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+fastrand = { workspace = true }
+futures = { workspace = true }
+tikv-jemallocator = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
