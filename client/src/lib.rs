@@ -14,7 +14,7 @@ use tokio_retry2::{Retry, RetryError, strategy::ExponentialBackoff};
 use tonic::transport::Channel;
 use tower::ServiceBuilder;
 
-const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
+pub const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
 
 type MetricsChannel = frontcache_metrics::RpcMetricsService<Channel>;
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
