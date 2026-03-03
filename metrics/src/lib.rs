@@ -19,11 +19,17 @@ static METRICS: OnceLock<Metrics> = OnceLock::new();
 
 pub struct Metrics {
     rpc_duration: Histogram<f64>,
+
     pub store_duration: Histogram<f64>,
     pub store_read_bytes: Histogram<f64>,
+
     pub cache_duration: Histogram<f64>,
+    pub purge_duration: Histogram<f64>,
+    pub flush_duration: Histogram<f64>,
+
     pub ring_members: Gauge<u64>,
     pub ring_member_changes: Counter<u64>,
+
     pub disk_byte_changes: Counter<u64>,
 }
 
@@ -58,6 +64,7 @@ pub fn init() {
             .with_description("RPC request duration in milliseconds")
             .with_boundaries(latency_buckets.clone())
             .build(),
+
         store_duration: meter
             .f64_histogram("store_duration_ms")
             .with_description("Upstream store operation duration in milliseconds")
@@ -67,11 +74,23 @@ pub fn init() {
             .f64_histogram("store_read_bytes")
             .with_description("Bytes read from upstream store")
             .build(),
+
         cache_duration: meter
             .f64_histogram("cache_duration_ms")
             .with_description("Cache operation duration in milliseconds")
+            .with_boundaries(latency_buckets.clone())
+            .build(),
+        purge_duration: meter
+            .f64_histogram("purge_duration_ms")
+            .with_description("Cache eviction (purge) duration in milliseconds")
+            .with_boundaries(latency_buckets.clone())
+            .build(),
+        flush_duration: meter
+            .f64_histogram("flush_duration_ms")
+            .with_description("LRU flush duration in milliseconds")
             .with_boundaries(latency_buckets)
             .build(),
+
         ring_members: meter
             .u64_gauge("ring_members")
             .with_description("Current number of members in the hash ring")
@@ -80,6 +99,7 @@ pub fn init() {
             .u64_counter("ring_member_changes")
             .with_description("Number of members added or removed from the hash ring")
             .build(),
+
         disk_byte_changes: meter
             .u64_counter("disk_byte_changes")
             .with_description("Bytes added to, evicted from, or served from cache")

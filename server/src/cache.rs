@@ -461,7 +461,7 @@ impl Cache {
 
         let m = frontcache_metrics::get();
         m.disk_byte_changes
-            .add(block_size, &[KeyValue::new("action", "added")]);
+            .add(block_size, &[KeyValue::new("action", "downloaded")]);
 
         if let Some(requested) = requested_version
             && version != requested
@@ -476,6 +476,7 @@ impl Cache {
     }
 
     pub async fn purge_bytes_from(&self, cache_dir: &Path, bytes_to_reclaim: u64) -> Result<()> {
+        let start = std::time::Instant::now();
         let mut candidates: Vec<(u64, BlockKey, PathBuf, u64)> = Vec::new();
         for entry in self.states.iter() {
             let obj_key = entry.key();
@@ -543,12 +544,15 @@ impl Cache {
 
         let m = frontcache_metrics::get();
         m.disk_byte_changes
-            .add(deleted_bytes, &[KeyValue::new("action", "evicted")]);
+            .add(deleted_bytes, &[KeyValue::new("action", "purged")]);
+        m.purge_duration
+            .record(start.elapsed().as_secs_f64() * 1000.0, &[]);
 
         Ok(())
     }
 
     pub fn flush_last_accessed(&self) {
+        let start = std::time::Instant::now();
         let now = Block::now();
         let mut entries = Vec::new();
         self.dirty.retain(|key| {
@@ -561,5 +565,9 @@ impl Cache {
         {
             tracing::error!("Failed to flush last_accessed: {}", e);
         }
+
+        frontcache_metrics::get()
+            .flush_duration
+            .record(start.elapsed().as_secs_f64() * 1000.0, &[]);
     }
 }
