@@ -259,6 +259,24 @@ async fn download_error_reaches_waiters() -> Result<()> {
 }
 
 #[tokio::test]
+async fn missing_keys_do_not_leak_slots() -> Result<()> {
+    let mut bc = bare_cache();
+    // Don't seed anything — all keys are missing
+
+    for i in 0..50 {
+        let key = object_key(&format!("test/missing-{i}.dat"));
+        let cache = bc.cache.clone();
+        let t = tokio::spawn(async move { cache.get(&key, 0, None).await });
+        bc.call_rx.recv().await.unwrap();
+        bc.store.gate.wait().await;
+        assert!(t.await?.is_err());
+    }
+
+    assert_eq!(bc.cache.slot_count(), 0, "leaked empty slots");
+    Ok(())
+}
+
+#[tokio::test]
 async fn shutdown_stops_background_tasks() -> Result<()> {
     frontcache_metrics::init();
 

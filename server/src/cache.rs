@@ -141,6 +141,10 @@ impl Cache {
         self.dirty.lock().unwrap().insert(key, ts);
     }
 
+    pub fn slot_count(&self) -> usize {
+        self.states.len()
+    }
+
     pub fn block_count(&self) -> usize {
         self.states
             .iter()
@@ -347,6 +351,9 @@ impl Cache {
                     if let Some(mut slot) = cache.states.get_mut(&obj_key_owned) {
                         slot.inflight.remove(&version_owned);
                     }
+                    cache.states.remove_if(&obj_key_owned, |_, s| {
+                        s.versions.is_empty() && s.inflight.is_empty()
+                    });
 
                     let shared = Arc::new(match &result {
                         Ok(fresh) => Ok(fresh.clone()),
@@ -395,6 +402,9 @@ impl Cache {
         if let Some(mut slot) = self.states.get_mut(obj_key) {
             slot.versions.remove(version);
         }
+        self.states.remove_if(obj_key, |_, s| {
+            s.versions.is_empty() && s.inflight.is_empty()
+        });
     }
 
     async fn download_block(
@@ -561,6 +571,9 @@ impl Cache {
                 if let Some(mut slot) = self.states.get_mut(&obj_key) {
                     slot.versions.remove(&key.2);
                 }
+                self.states.remove_if(&obj_key, |_, s| {
+                    s.versions.is_empty() && s.inflight.is_empty()
+                });
                 for disk in &self.disks {
                     if path.starts_with(disk.path()) {
                         disk.sub_used(*size);
