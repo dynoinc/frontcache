@@ -97,36 +97,37 @@ impl K8sMembership {
                 None => return Ok(()),
             };
             match event {
-                Event::Apply(pod) => {
+                Event::Apply(pod) | Event::InitApply(pod) => {
                     let info = pod_info(&pod, self.port);
-                    if let Some(addr) = eligible_addr(&info) {
-                        tracing::info!(
-                            pod = %info.name, ip = ?info.ip,
-                            ready = info.ready, terminating = info.terminating,
-                            action = "add", "Ring membership change"
-                        );
-                        ring.add_node(addr.to_owned());
+                    let (action, msg) = if let Some(addr) = eligible_addr(&info) {
+                        if init_buf.as_mut().is_some_and(|buf| {
+                            buf.push(addr.to_owned());
+                            true
+                        }) {
+                            ("init_add", "Buffering eligible pod")
+                        } else {
+                            ring.add_node(addr.to_owned());
+                            ("add", "Ring membership change")
+                        }
                     } else if let Some(addr) = &info.addr {
-                        tracing::info!(
-                            pod = %info.name, ip = ?info.ip,
-                            ready = info.ready, terminating = info.terminating,
-                            action = "remove", "Ring membership change"
-                        );
-                        ring.remove_node(addr);
+                        if init_buf.is_none() {
+                            ring.remove_node(addr);
+                        }
+                        ("remove", "Ring membership change")
                     } else {
-                        tracing::info!(
-                            pod = %info.name, ip = ?info.ip,
-                            ready = info.ready, terminating = info.terminating,
-                            action = "skip", "No IP, skipping"
-                        );
-                    }
+                        ("skip", "No IP")
+                    };
+                    tracing::info!(
+                        pod = %info.name, ip = ?info.ip,
+                        ready = info.ready, terminating = info.terminating,
+                        action, msg,
+                    );
                 }
                 Event::Delete(pod) => {
                     let info = pod_info(&pod, self.port);
                     if let Some(addr) = &info.addr {
                         tracing::info!(
                             pod = %info.name, ip = ?info.ip,
-                            ready = info.ready, terminating = info.terminating,
                             action = "remove", "Pod deleted"
                         );
                         ring.remove_node(addr);
@@ -135,25 +136,6 @@ impl K8sMembership {
                 Event::Init => {
                     tracing::info!("Watcher initialized, buffering initial sync");
                     init_buf = Some(Vec::new());
-                }
-                Event::InitApply(pod) => {
-                    let info = pod_info(&pod, self.port);
-                    if let Some(addr) = eligible_addr(&info) {
-                        tracing::info!(
-                            pod = %info.name, ip = ?info.ip,
-                            ready = info.ready, terminating = info.terminating,
-                            action = "init_add", "Init buffering eligible pod"
-                        );
-                        if let Some(buf) = &mut init_buf {
-                            buf.push(addr.to_owned());
-                        }
-                    } else {
-                        tracing::info!(
-                            pod = %info.name, ip = ?info.ip,
-                            ready = info.ready, terminating = info.terminating,
-                            action = "init_skip", "Init skipping ineligible pod"
-                        );
-                    }
                 }
                 Event::InitDone => {
                     if let Some(buf) = init_buf.take() {
