@@ -16,7 +16,7 @@ message LookupOwnerRequest {
 }
 
 message LookupOwnerResponse {
-  string addr = 1;
+  repeated string addrs = 1;
 }
 
 message ReadRangeRequest {

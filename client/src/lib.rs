@@ -141,6 +141,8 @@ impl CacheClient {
         Ok(Box::pin(stream))
     }
 
+    // Future extensions:
+    // - Hedge requests by racing multiple servers concurrently instead of serially
     async fn read_block_stream_with_retry(
         &self,
         key: String,
@@ -161,33 +163,40 @@ impl CacheClient {
             let key = key.clone();
             let version = version.clone();
             async move {
-                let owner = client
-                    .lookup_owner(&key, block_offset)
+                let addrs = client
+                    .lookup_owners(&key, block_offset)
                     .await
                     .map_err(RetryError::transient)?;
-                let mut cache_client = client
-                    .get_or_create_cache_connection(&owner)
-                    .await
-                    .map_err(RetryError::transient)?;
-                let mut req = tonic::Request::new(ReadRangeRequest {
-                    key,
-                    offset: read_offset,
-                    length: read_len,
-                    version,
-                });
-                req.set_timeout(read_timeout);
-                let stream = cache_client
-                    .read_range(req)
-                    .await
-                    .map_err(|s| {
-                        if is_retryable(s.code()) {
-                            RetryError::transient(anyhow::Error::from(s))
-                        } else {
-                            RetryError::permanent(anyhow::Error::from(s))
+
+                let mut last_err = None;
+                for addr in &addrs {
+                    let mut cache_client = match client.get_or_create_cache_connection(addr).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            last_err = Some(RetryError::transient(e));
+                            continue;
                         }
-                    })?
-                    .into_inner();
-                Ok::<_, RetryError<anyhow::Error>>(stream)
+                    };
+                    let mut req = tonic::Request::new(ReadRangeRequest {
+                        key: key.clone(),
+                        offset: read_offset,
+                        length: read_len,
+                        version: version.clone(),
+                    });
+                    req.set_timeout(read_timeout);
+                    match cache_client.read_range(req).await {
+                        Ok(resp) => return Ok(resp.into_inner()),
+                        Err(s) if !is_retryable(s.code()) => {
+                            return Err(RetryError::permanent(anyhow::Error::from(s)));
+                        }
+                        Err(s) => {
+                            last_err = Some(RetryError::transient(anyhow::Error::from(s)));
+                        }
+                    }
+                }
+                Err(last_err.unwrap_or_else(|| {
+                    RetryError::transient(anyhow::anyhow!("no owners returned"))
+                }))
             }
         })
         .await?;
@@ -204,7 +213,7 @@ impl CacheClient {
         Ok(Box::pin(chunk_stream))
     }
 
-    async fn lookup_owner(&self, key: &str, block_offset: u64) -> Result<String> {
+    async fn lookup_owners(&self, key: &str, block_offset: u64) -> Result<Vec<String>> {
         let strategy = ExponentialBackoff::from_millis(100)
             .factor(2)
             .max_delay(Duration::from_secs(1))
@@ -230,7 +239,7 @@ impl CacheClient {
         })
         .await?;
 
-        Ok(resp.into_inner().addr)
+        Ok(resp.into_inner().addrs)
     }
 
     async fn get_or_create_cache_connection(

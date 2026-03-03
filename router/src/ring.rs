@@ -7,14 +7,15 @@ use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 const NUM_VPARTITIONS: usize = 1 << 18;
 const VP_MASK: u64 = NUM_VPARTITIONS as u64 - 1;
 
+const REPLICAS: usize = 4;
+
 struct Snapshot {
     servers: Vec<String>,
-    table: Vec<u16>,
+    table: Vec<[u16; REPLICAS]>,
 }
 
 /// Future extensions:
 /// - Weighted servers (ln(h/MAX)/weight)
-/// - Replication (top-K)
 /// - Incremental rebuild on single-server changes
 pub struct Straw2Router {
     snapshot: RwLock<Arc<Snapshot>>,
@@ -67,38 +68,47 @@ impl Straw2Router {
         record_metrics(len, "sync");
     }
 
-    pub fn get_owner(&self, object: &str, block_offset: u64) -> Option<String> {
+    pub fn get_owners(&self, object: &str, block_offset: u64) -> Option<Vec<String>> {
         let snap = self.snapshot.read().clone();
         if snap.servers.is_empty() {
             return None;
         }
         let key = format!("{}:{}", object, block_offset);
         let vp = (xxh3_64(key.as_bytes()) & VP_MASK) as usize;
-        Some(snap.servers[snap.table[vp] as usize].clone())
+        let addrs = snap.table[vp]
+            .iter()
+            .filter(|&&idx| idx != u16::MAX)
+            .map(|&idx| snap.servers[idx as usize].clone())
+            .collect::<Vec<_>>();
+        Some(addrs)
     }
 }
 
-fn rebuild_table(servers: &[String]) -> Vec<u16> {
+fn rebuild_table(servers: &[String]) -> Vec<[u16; REPLICAS]> {
     if servers.is_empty() {
         return Vec::new();
     }
     (0..NUM_VPARTITIONS)
         .into_par_iter()
-        .map(|vp| straw2_select(vp as u64, servers))
+        .map(|vp| straw2_select_top(vp as u64, servers))
         .collect()
 }
 
-fn straw2_select(vp: u64, servers: &[String]) -> u16 {
-    let mut best_idx: u16 = 0;
-    let mut best_hash: u64 = 0;
+fn straw2_select_top(vp: u64, servers: &[String]) -> [u16; REPLICAS] {
+    let mut top = [(0u64, u16::MAX); REPLICAS];
     for (i, server) in servers.iter().enumerate() {
         let h = xxh3_64_with_seed(server.as_bytes(), vp);
-        if h > best_hash || i == 0 {
-            best_hash = h;
-            best_idx = i as u16;
+        // Insert into sorted top-K (descending by hash)
+        if let Some(pos) = top.iter().position(|&(th, _)| h > th) {
+            top.copy_within(pos..REPLICAS - 1, pos + 1);
+            top[pos] = (h, i as u16);
         }
     }
-    best_idx
+    let mut result = [u16::MAX; REPLICAS];
+    for (i, &(_, idx)) in top.iter().enumerate() {
+        result[i] = idx;
+    }
+    result
 }
 
 fn record_metrics(server_count: usize, action: &'static str) {

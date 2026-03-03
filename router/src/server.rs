@@ -51,11 +51,11 @@ impl RouterService for RouterServer {
         let req = request.get_ref();
         let block_offset = (req.offset / BLOCK_SIZE) * BLOCK_SIZE;
 
-        let addr = self
+        let addrs = self
             .ring
-            .get_owner(&req.key, block_offset)
+            .get_owners(&req.key, block_offset)
             .ok_or_else(|| Status::unavailable("no nodes available"))?;
 
-        Ok(Response::new(LookupOwnerResponse { addr }))
+        Ok(Response::new(LookupOwnerResponse { addrs }))
     }
 }
