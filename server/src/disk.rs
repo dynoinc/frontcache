@@ -75,12 +75,8 @@ pub fn start_purger(cache: Arc<Cache>) {
 
             let m = frontcache_metrics::get();
             m.blocks_total.record(cache.block_count() as u64, &[]);
-            let mut total_capacity: u64 = 0;
-            let mut total_used: u64 = 0;
-            for disk in cache.disks() {
-                total_capacity += disk.capacity();
-                total_used += disk.used();
-            }
+            let total_capacity: u64 = cache.disks().iter().map(|d| d.capacity()).sum();
+            let total_used: u64 = cache.disks().iter().map(|d| d.used()).sum();
             m.disk_total_bytes.record(total_capacity as f64, &[]);
             m.disk_available_bytes
                 .record((total_capacity - total_used) as f64, &[]);
