@@ -95,6 +95,9 @@ async fn main() -> Result<()> {
     tracing::info!("Shutting down");
     shutdown.cancel();
     let _ = flusher.await;
+    for disk in cache.disks() {
+        let _ = disk.evict_lock().acquire_owned().await;
+    }
     cache.flush_last_accessed();
     frontcache_metrics::shutdown()?;
     Ok(())

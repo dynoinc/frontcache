@@ -672,6 +672,7 @@ dependencies = [
  "rayon",
  "tikv-jemallocator",
  "tokio",
+ "tokio-util",
  "tonic",
  "tracing",
  "tracing-subscriber",

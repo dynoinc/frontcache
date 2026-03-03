@@ -35,6 +35,8 @@ pub enum CacheError {
     ReadBlock(#[source] Arc<anyhow::Error>),
     #[error("Version mismatch: upstream={upstream}, requested={requested}")]
     VersionMismatch { upstream: String, requested: String },
+    #[error("Download task aborted")]
+    DownloadAborted,
 }
 
 pub enum CacheHit {
@@ -327,7 +329,7 @@ impl Cache {
                     let _ = tx.send(shared);
                 });
 
-                let outcome = rx.await.unwrap();
+                let outcome = rx.await.map_err(|_| CacheError::DownloadAborted)?;
 
                 let m = frontcache_metrics::get();
                 let label = if outcome.is_ok() { "miss" } else { "error" };

@@ -10,6 +10,7 @@ use kube::{
         watcher::{Config, Event, watcher},
     },
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::ring::Straw2Router;
 
@@ -81,20 +82,27 @@ impl K8sMembership {
         })
     }
 
-    pub async fn watch_pods(self, ring: Arc<Straw2Router>) -> Result<()> {
+    pub async fn watch_pods(
+        self,
+        ring: Arc<Straw2Router>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
         let api: Api<Pod> = Api::namespaced(self.client, &self.namespace);
         let config = Config::default().labels(&self.label_selector);
         let mut watcher = std::pin::pin!(watcher(api, config).default_backoff());
         let mut init_buf: Option<Vec<String>> = None;
 
         loop {
-            let event = match watcher.next().await {
-                Some(Ok(event)) => event,
-                Some(Err(e)) => {
-                    tracing::error!("Watcher error: {}", e);
-                    continue;
-                }
-                None => return Ok(()),
+            let event = tokio::select! {
+                ev = watcher.next() => match ev {
+                    Some(Ok(event)) => event,
+                    Some(Err(e)) => {
+                        tracing::error!("Watcher error: {}", e);
+                        continue;
+                    }
+                    None => return Ok(()),
+                },
+                _ = cancel.cancelled() => return Ok(()),
             };
             match event {
                 Event::Apply(pod) | Event::InitApply(pod) => {
