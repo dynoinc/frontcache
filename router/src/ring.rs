@@ -39,10 +39,7 @@ impl Straw2Router {
         };
         let mut servers = old.servers.clone();
         servers.insert(pos, addr);
-        let table = rebuild_table(&servers);
-        let len = servers.len();
-        *self.snapshot.write() = Arc::new(Snapshot { servers, table });
-        record_metrics(len, "added");
+        self.commit(servers, "added");
     }
 
     pub fn remove_node(&self, addr: &str) {
@@ -53,19 +50,20 @@ impl Straw2Router {
         };
         let mut servers = old.servers.clone();
         servers.remove(pos);
-        let table = rebuild_table(&servers);
-        let len = servers.len();
-        *self.snapshot.write() = Arc::new(Snapshot { servers, table });
-        record_metrics(len, "removed");
+        self.commit(servers, "removed");
     }
 
     pub fn set_servers(&self, mut servers: Vec<String>) {
         servers.sort();
         servers.dedup();
+        self.commit(servers, "sync");
+    }
+
+    fn commit(&self, servers: Vec<String>, action: &'static str) {
         let table = rebuild_table(&servers);
         let len = servers.len();
         *self.snapshot.write() = Arc::new(Snapshot { servers, table });
-        record_metrics(len, "sync");
+        record_metrics(len, action);
     }
 
     pub fn get_owners(&self, object: &str, block_offset: u64) -> Option<Vec<String>> {
