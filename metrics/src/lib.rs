@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use opentelemetry::{
     KeyValue,
-    metrics::{Counter, Gauge, Histogram, MeterProvider as _},
+    metrics::{Counter, Gauge, Histogram, Meter, MeterProvider as _},
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::{
@@ -22,12 +22,9 @@ pub struct Metrics {
     pub store_read_duration: Histogram<f64>,
     pub store_read_bytes: Histogram<f64>,
     pub cache_get_duration: Histogram<f64>,
-    pub disk_available_bytes: Gauge<f64>,
-    pub disk_total_bytes: Gauge<f64>,
     pub ring_members: Gauge<u64>,
     pub ring_member_changes: Counter<u64>,
     pub bytes_served: Counter<u64>,
-    pub blocks_total: Gauge<u64>,
     pub block_changes: Counter<u64>,
 }
 
@@ -41,9 +38,7 @@ pub fn init() {
                 .build()
                 .expect("Failed to create OTLP exporter");
 
-            let reader = PeriodicReader::builder(exporter, runtime::Tokio)
-                .with_interval(std::time::Duration::from_secs(10))
-                .build();
+            let reader = PeriodicReader::builder(exporter, runtime::Tokio).build();
 
             SdkMeterProvider::builder().with_reader(reader).build()
         } else {
@@ -78,14 +73,6 @@ pub fn init() {
             .with_description("Cache get operation duration in seconds")
             .with_boundaries(latency_buckets)
             .build(),
-        disk_available_bytes: meter
-            .f64_gauge("disk_available_bytes")
-            .with_description("Available disk space in bytes")
-            .build(),
-        disk_total_bytes: meter
-            .f64_gauge("disk_total_bytes")
-            .with_description("Total disk space in bytes")
-            .build(),
         ring_members: meter
             .u64_gauge("ring_members")
             .with_description("Current number of members in the hash ring")
@@ -97,10 +84,6 @@ pub fn init() {
         bytes_served: meter
             .u64_counter("bytes_served")
             .with_description("Total bytes served to clients")
-            .build(),
-        blocks_total: meter
-            .u64_gauge("blocks_total")
-            .with_description("Current number of cached blocks")
             .build(),
         block_changes: meter
             .u64_counter("block_changes")
@@ -118,6 +101,13 @@ pub fn shutdown() -> opentelemetry_sdk::metrics::MetricResult<()> {
 
 pub fn get() -> &'static Metrics {
     METRICS.get().expect("Metrics not initialized")
+}
+
+pub fn meter() -> Meter {
+    METER_PROVIDER
+        .get()
+        .expect("Metrics not initialized")
+        .meter("frontcache")
 }
 
 #[derive(Clone)]
