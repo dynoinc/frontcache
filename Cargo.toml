@@ -52,7 +52,7 @@ serde_json = "1.0"
 opentelemetry = { version = "0.27", default-features = false }
 opentelemetry_sdk = { version = "0.27", default-features = false, features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.27", default-features = false, features = ["metrics", "grpc-tonic"] }
-tokio-retry2 = "0.5"
+tokio-retry2 = { version = "0.5", features = ["jitter"] }
 tower = "0.5"
 http = "1.0"
 

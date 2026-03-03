@@ -49,6 +49,14 @@ impl ClientConfig {
     }
 }
 
+fn retry_strategy(max_retries: usize) -> impl Iterator<Item = Duration> {
+    ExponentialBackoff::from_millis(100)
+        .factor(2)
+        .max_delay(Duration::from_secs(1))
+        .map(tokio_retry2::strategy::jitter)
+        .take(max_retries)
+}
+
 fn is_retryable(code: tonic::Code) -> bool {
     !matches!(
         code,
@@ -151,10 +159,7 @@ impl CacheClient {
         read_len: u64,
         version: Option<String>,
     ) -> Result<ByteStream> {
-        let strategy = ExponentialBackoff::from_millis(100)
-            .factor(2)
-            .max_delay(Duration::from_secs(1))
-            .take(self.config.max_retries);
+        let strategy = retry_strategy(self.config.max_retries);
 
         let client = self.clone();
         let read_timeout = self.config.read_timeout;
@@ -214,10 +219,7 @@ impl CacheClient {
     }
 
     async fn lookup_owners(&self, key: &str, block_offset: u64) -> Result<Vec<String>> {
-        let strategy = ExponentialBackoff::from_millis(100)
-            .factor(2)
-            .max_delay(Duration::from_secs(1))
-            .take(self.config.max_retries);
+        let strategy = retry_strategy(self.config.max_retries);
 
         let router = self.router.clone();
         let resp = Retry::spawn(strategy, || {
@@ -252,10 +254,7 @@ impl CacheClient {
 
         let endpoint = Channel::from_shared(format!("http://{}", addr))?;
 
-        let strategy = ExponentialBackoff::from_millis(100)
-            .factor(2)
-            .max_delay(Duration::from_secs(1))
-            .take(self.config.max_retries);
+        let strategy = retry_strategy(self.config.max_retries);
 
         let channel = Retry::spawn(strategy, || {
             let endpoint = endpoint.clone();

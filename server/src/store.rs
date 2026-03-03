@@ -51,21 +51,9 @@ impl Store {
     }
 
     fn parse_key(key: &str) -> Result<(String, String, String), StoreError> {
-        let parts: Vec<&str> = key.splitn(2, "://").collect();
-        if parts.len() != 2 {
-            return Err(StoreError::InvalidKey(key.to_string()));
-        }
-
-        let provider = parts[0];
-        let rest = parts[1];
-
-        let slash_pos = rest
-            .find('/')
-            .ok_or_else(|| StoreError::InvalidKey(key.to_string()))?;
-
-        let bucket = &rest[..slash_pos];
-        let path = &rest[slash_pos + 1..];
-
+        let err = || StoreError::InvalidKey(key.to_string());
+        let (provider, rest) = key.split_once("://").ok_or_else(err)?;
+        let (bucket, path) = rest.split_once('/').ok_or_else(err)?;
         Ok((provider.to_string(), bucket.to_string(), path.to_string()))
     }
 
