@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use redb::{
@@ -109,7 +110,13 @@ impl Index {
         let blocks_table = read_txn.open_table(BLOCKS_TABLE)?;
         let la_table = read_txn.open_table(LAST_ACCESSED_TABLE)?;
 
-        let mut la_iter = la_table.iter()?.peekable();
+        let mut last_accessed_map = HashMap::new();
+        for item in la_table.iter()? {
+            let (k, v) = item?;
+            let kv = k.value();
+            let key: BlockKey = (kv.0.to_string(), kv.1, kv.2.to_string());
+            last_accessed_map.insert(key, v.value());
+        }
 
         let mut records = Vec::new();
         for item in blocks_table.iter()? {
@@ -119,30 +126,8 @@ impl Index {
                 bk.value().1,
                 bk.value().2.to_string(),
             );
-
-            while let Some(Ok((k, _))) = la_iter.peek() {
-                let kv = k.value();
-                if (kv.0.as_str(), kv.1, kv.2.as_str())
-                    < (block_key.0.as_str(), block_key.1, block_key.2.as_str())
-                {
-                    la_iter.next();
-                } else {
-                    break;
-                }
-            }
-
-            let mut last_accessed = None;
-            if let Some(Ok((k, _))) = la_iter.peek() {
-                let kv = k.value();
-                if (kv.0.as_str(), kv.1, kv.2.as_str())
-                    == (block_key.0.as_str(), block_key.1, block_key.2.as_str())
-                {
-                    let (_, v) = la_iter.next().unwrap()?;
-                    last_accessed = Some(v.value());
-                }
-            }
-
             let entry: BlockEntry = serde_json::from_slice(bv.value())?;
+            let last_accessed = last_accessed_map.remove(&block_key);
             records.push((
                 block_key,
                 BlockRecord {
