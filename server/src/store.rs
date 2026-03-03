@@ -100,6 +100,14 @@ impl Store {
         Ok(backend)
     }
 
+    fn status_label<T>(result: &Result<T, StoreError>) -> &'static str {
+        match result {
+            Ok(_) => "ok",
+            Err(StoreError::NotFound(_)) => "not_found",
+            Err(_) => "error",
+        }
+    }
+
     pub async fn head(&self, key: &str) -> Result<String, StoreError> {
         let start = Instant::now();
         let (provider, bucket, path) = Self::parse_key(key)?;
@@ -116,18 +124,11 @@ impl Store {
             .map_err(|e| StoreError::from_object_store(e, key));
 
         let m = frontcache_metrics::get();
-        let status = result.as_ref().map(|_| "ok").unwrap_or_else(|e| {
-            if matches!(e, StoreError::NotFound(_)) {
-                "not_found"
-            } else {
-                "error"
-            }
-        });
         m.store_duration.record(
             start.elapsed().as_secs_f64() * 1000.0,
             &[
                 KeyValue::new("provider", provider),
-                KeyValue::new("status", status),
+                KeyValue::new("status", Self::status_label(&result)),
                 KeyValue::new("operation", "head"),
             ],
         );
@@ -164,25 +165,19 @@ impl Store {
             ..Default::default()
         };
         let result = backend.get_opts(&obj_path, opts).await;
+        let result = result.map_err(|e| StoreError::from_object_store(e, key));
 
         let m = frontcache_metrics::get();
-        let status = result.as_ref().map(|_| "ok").unwrap_or_else(|e| {
-            if matches!(e, ObjectStoreError::NotFound { .. }) {
-                "not_found"
-            } else {
-                "error"
-            }
-        });
         m.store_duration.record(
             start.elapsed().as_secs_f64() * 1000.0,
             &[
                 KeyValue::new("provider", provider.clone()),
-                KeyValue::new("status", status),
+                KeyValue::new("status", Self::status_label(&result)),
                 KeyValue::new("operation", "read"),
             ],
         );
 
-        let get_result = result.map_err(|e| StoreError::from_object_store(e, key))?;
+        let get_result = result?;
         let version = Self::extract_version(&get_result);
 
         let data = get_result

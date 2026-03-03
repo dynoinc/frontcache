@@ -183,23 +183,19 @@ impl BlockReader {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn open_direct(path: &Path) -> Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
+    #[cfg(target_os = "linux")]
     {
-        Ok(f) => Ok(f),
-        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {
-            Ok(OpenOptions::new().read(true).open(path)?)
+        use std::os::unix::fs::OpenOptionsExt;
+        match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(path)
+        {
+            Ok(f) => return Ok(f),
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {}
+            Err(e) => return Err(e.into()),
         }
-        Err(e) => Err(e.into()),
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn open_direct(path: &Path) -> Result<File> {
     Ok(OpenOptions::new().read(true).open(path)?)
 }
