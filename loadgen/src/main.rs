@@ -62,7 +62,9 @@ async fn main() -> Result<()> {
 }
 
 async fn drain(client: &CacheClient, file: &str, offset: u64) -> Result<usize> {
-    let mut stream = client.stream_range(file, offset, 4096, Some("v1"))?;
+    let mut stream = client
+        .stream_range(file, offset..offset + 4096, Some("v1"))
+        .await?;
     let mut nbytes = 0;
     while let Some(chunk) = stream.next().await {
         nbytes += chunk?.len();

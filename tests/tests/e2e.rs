@@ -105,11 +105,10 @@ async fn start_cluster() -> Result<TestCluster> {
 async fn read_all(
     client: &CacheClient,
     key: &str,
-    offset: u64,
-    length: u64,
+    range: impl std::ops::RangeBounds<u64>,
     version: Option<&str>,
 ) -> Result<Vec<u8>> {
-    let mut stream = client.stream_range(key, offset, length, version)?;
+    let mut stream = client.stream_range(key, range, version).await?;
     let mut buf = Vec::new();
     while let Some(chunk) = stream.try_next().await? {
         buf.extend_from_slice(&chunk);
@@ -134,7 +133,7 @@ async fn basic_read() -> Result<()> {
 
     seed(&c.mock, "test/file.dat", DATA_42_1K).await?;
 
-    let got = read_all(&c.client, &object_key("test/file.dat"), 0, 1024, None).await?;
+    let got = read_all(&c.client, &object_key("test/file.dat"), 0..1024, None).await?;
     assert_eq!(got.as_slice(), DATA_42_1K);
     Ok(())
 }
@@ -148,14 +147,14 @@ async fn cache_hit() -> Result<()> {
     seed(&c.mock, path, &data).await?;
 
     // First read — cache miss, fetches from store
-    let got = read_all(&c.client, &object_key(path), 0, 2048, None).await?;
+    let got = read_all(&c.client, &object_key(path), 0..2048, None).await?;
     assert_eq!(got, data);
 
     // Delete from mock store
     c.mock.delete(&ObjPath::from(path)).await?;
 
     // Second read — served from cache (store no longer has it)
-    let got = read_all(&c.client, &object_key(path), 0, 2048, None).await?;
+    let got = read_all(&c.client, &object_key(path), 0..2048, None).await?;
     assert_eq!(got, data);
     Ok(())
 }
@@ -168,7 +167,7 @@ async fn range_read() -> Result<()> {
     let data: Vec<u8> = (0..=255u8).cycle().take(65536).collect();
     seed(&c.mock, path, &data).await?;
 
-    let got = read_all(&c.client, &object_key(path), 1000, 5000, None).await?;
+    let got = read_all(&c.client, &object_key(path), 1000..6000, None).await?;
     assert_eq!(got, &data[1000..6000]);
     Ok(())
 }
@@ -177,7 +176,7 @@ async fn range_read() -> Result<()> {
 async fn not_found() -> Result<()> {
     let c = start_cluster().await?;
 
-    let result = read_all(&c.client, &object_key("test/missing.dat"), 0, 1024, None).await;
+    let result = read_all(&c.client, &object_key("test/missing.dat"), 0..1024, None).await;
     assert!(result.is_err());
     Ok(())
 }
@@ -192,7 +191,7 @@ async fn multi_block() -> Result<()> {
     let data: Vec<u8> = (0..=255u8).cycle().take(size).collect();
     seed(&c.mock, path, &data).await?;
 
-    let got = read_all(&c.client, &object_key(path), 0, size as u64, None).await?;
+    let got = read_all(&c.client, &object_key(path), 0..size as u64, None).await?;
     assert_eq!(got.len(), size);
     assert_eq!(got, data);
     Ok(())
@@ -206,7 +205,7 @@ async fn version_mismatch() -> Result<()> {
     seed(&c.mock, path, &[1u8; 1024]).await?;
 
     // Request a version that won't match the upstream etag
-    let result = read_all(&c.client, &object_key(path), 0, 1024, Some("wrong-version")).await;
+    let result = read_all(&c.client, &object_key(path), 0..1024, Some("wrong-version")).await;
     assert!(result.is_err());
     Ok(())
 }
@@ -227,7 +226,7 @@ async fn multiversion() -> Result<()> {
     let ver_a = put_a.e_tag.unwrap().trim_matches('"').to_string();
 
     // Read without version — caches block as ver_a
-    let got = read_all(&c.client, &key, 0, 1024, None).await?;
+    let got = read_all(&c.client, &key, 0..1024, None).await?;
     assert_eq!(got, data_a);
 
     // Overwrite with version B
@@ -240,15 +239,15 @@ async fn multiversion() -> Result<()> {
     assert_ne!(ver_a, ver_b);
 
     // Read ver_b — cache has ver_a but not ver_b, triggers download
-    let got = read_all(&c.client, &key, 0, 1024, Some(&ver_b)).await?;
+    let got = read_all(&c.client, &key, 0..1024, Some(&ver_b)).await?;
     assert_eq!(got, data_b);
 
     // Both versions now cached — read ver_a from cache (store was overwritten)
-    let got = read_all(&c.client, &key, 0, 1024, Some(&ver_a)).await?;
+    let got = read_all(&c.client, &key, 0..1024, Some(&ver_a)).await?;
     assert_eq!(got, data_a);
 
     // Read ver_b again from cache
-    let got = read_all(&c.client, &key, 0, 1024, Some(&ver_b)).await?;
+    let got = read_all(&c.client, &key, 0..1024, Some(&ver_b)).await?;
     assert_eq!(got, data_b);
 
     Ok(())
