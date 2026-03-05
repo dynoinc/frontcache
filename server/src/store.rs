@@ -197,7 +197,7 @@ impl Store {
 
         let get_result = result?;
         let version = Self::extract_version(&get_result);
-        let object_size = get_result.meta.size as u64;
+        let object_size = get_result.meta.size;
 
         let data = get_result
             .bytes()
