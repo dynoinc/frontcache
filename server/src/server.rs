@@ -23,6 +23,7 @@ pub struct CacheServer {
 
 impl CacheServer {
     pub fn new(cache: Arc<Cache>, chunk_size: usize) -> Self {
+        assert!(chunk_size > 0, "chunk_size must be > 0");
         Self { cache, chunk_size }
     }
 

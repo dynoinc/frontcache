@@ -17,6 +17,7 @@ pub struct RouterServer {
 
 impl RouterServer {
     pub fn new(ring: Arc<Straw2Router>, block_size: u64) -> Self {
+        assert!(block_size > 0, "block_size must be > 0");
         Self { ring, block_size }
     }
 

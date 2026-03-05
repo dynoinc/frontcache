@@ -69,6 +69,7 @@ impl CacheClientBuilder {
     }
 
     pub async fn build(self) -> Result<CacheClient> {
+        anyhow::ensure!(self.block_size > 0, "block_size must be > 0");
         frontcache_metrics::init();
         let channel = Channel::from_shared(self.router_addr)?.connect().await?;
         let channel = ServiceBuilder::new()
@@ -117,7 +118,7 @@ fn resolve_range(range: &impl RangeBounds<u64>) -> (u64, Option<u64>) {
         Bound::Unbounded => 0,
     };
     let end = match range.end_bound() {
-        Bound::Included(&e) => Some(e + 1),
+        Bound::Included(&e) => e.checked_add(1),
         Bound::Excluded(&e) => Some(e),
         Bound::Unbounded => None,
     };
