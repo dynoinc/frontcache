@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use frontcache_proto::{
     LookupOwnerRequest, ReadRangeRequest, cache_service_client::CacheServiceClient,
@@ -150,8 +150,73 @@ impl CacheClient {
         Ok(Box::pin(stream))
     }
 
-    // Future extensions:
-    // - Hedge requests by racing multiple servers concurrently instead of serially
+    pub async fn read_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+        version: Option<&str>,
+    ) -> Result<Bytes> {
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+        let end_offset = offset
+            .checked_add(length)
+            .ok_or_else(|| anyhow::anyhow!("offset + length overflows u64"))?;
+
+        let mut block_reads = Vec::new();
+        let mut current = offset;
+        while current < end_offset {
+            let block_offset = (current / BLOCK_SIZE) * BLOCK_SIZE;
+            let read_end = end_offset.min(block_offset + BLOCK_SIZE);
+            let (read_offset, read_len) = (current, read_end - current);
+            current = read_end;
+            block_reads.push((block_offset, read_offset, read_len));
+        }
+
+        let client = self.clone();
+        let key = key.to_string();
+        let version = version.map(|v| v.to_string());
+
+        let results: Vec<(usize, Bytes)> = futures::stream::iter(block_reads)
+            .map(move |(block_offset, read_offset, read_len)| {
+                let client = client.clone();
+                let key = key.clone();
+                let version = version.clone();
+                let buf_pos = (read_offset - offset) as usize;
+                async move {
+                    let stream = client
+                        .read_block_stream_with_retry(
+                            key,
+                            block_offset,
+                            read_offset,
+                            read_len,
+                            version,
+                        )
+                        .await?;
+                    let data: BytesMut = stream
+                        .try_fold(BytesMut::new(), |mut acc, chunk| async move {
+                            acc.extend_from_slice(&chunk);
+                            Ok(acc)
+                        })
+                        .await?;
+                    Ok::<_, anyhow::Error>((buf_pos, data.freeze()))
+                }
+            })
+            .buffer_unordered(self.config.prefetch_blocks)
+            .try_collect()
+            .await?;
+
+        let len = length as usize;
+        let mut buf = BytesMut::with_capacity(len);
+        // Safety: all positions will be written by the block copies below
+        unsafe { buf.set_len(len) };
+        for (pos, data) in results {
+            buf[pos..pos + data.len()].copy_from_slice(&data);
+        }
+        Ok(buf.freeze())
+    }
+
     async fn read_block_stream_with_retry(
         &self,
         key: String,
