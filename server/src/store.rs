@@ -40,6 +40,7 @@ impl StoreError {
 pub struct ReadResult {
     pub data: Bytes,
     pub version: String,
+    pub object_size: u64,
 }
 
 pub struct Store {
@@ -196,6 +197,7 @@ impl Store {
 
         let get_result = result?;
         let version = Self::extract_version(&get_result);
+        let object_size = get_result.meta.size as u64;
 
         let data = get_result
             .bytes()
@@ -207,6 +209,10 @@ impl Store {
             &[KeyValue::new("provider", provider_label)],
         );
 
-        Ok(ReadResult { data, version })
+        Ok(ReadResult {
+            data,
+            version,
+            object_size,
+        })
     }
 }

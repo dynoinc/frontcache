@@ -84,7 +84,8 @@ impl CacheService for CacheServer {
 
         let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
         let offset_in_block = (offset - block_offset) as usize;
-        let block_len = hit.size() as usize;
+        let block_len = hit.block_size() as usize;
+        let object_size = hit.object_size();
 
         if offset_in_block >= block_len {
             return Err(Status::out_of_range(format!(
@@ -110,8 +111,8 @@ impl CacheService for CacheServer {
         let stream: Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>> =
             match hit {
                 CacheHit::Disk { reader, .. } => Box::pin(futures_util::stream::try_unfold(
-                    (reader, offset_in_block),
-                    move |(reader, pos)| async move {
+                    (reader, offset_in_block, true),
+                    move |(reader, pos, first)| async move {
                         if pos >= chunk_end {
                             return Ok(None);
                         }
@@ -126,14 +127,16 @@ impl CacheService for CacheServer {
                                 "short read at offset {pos}: expected {len} bytes, got {chunk_len}"
                             )));
                         }
-                        Ok(Some((
-                            ReadRangeResponse { data: chunk },
-                            (reader, pos + chunk_len),
-                        )))
+                        let resp = ReadRangeResponse {
+                            data: chunk,
+                            object_size: if first { object_size } else { 0 },
+                        };
+                        Ok(Some((resp, (reader, pos + chunk_len, false))))
                     },
                 )),
-                CacheHit::Fresh { data, .. } => {
-                    Box::pin(futures_util::stream::unfold(offset_in_block, move |pos| {
+                CacheHit::Fresh { data, .. } => Box::pin(futures_util::stream::unfold(
+                    (offset_in_block, true),
+                    move |(pos, first)| {
                         let data = data.clone();
                         async move {
                             if pos >= chunk_end {
@@ -141,10 +144,14 @@ impl CacheService for CacheServer {
                             }
                             let len = chunk_size.min(chunk_end - pos);
                             let chunk = data.slice(pos..pos + len);
-                            Some((Ok(ReadRangeResponse { data: chunk }), pos + len))
+                            let resp = ReadRangeResponse {
+                                data: chunk,
+                                object_size: if first { object_size } else { 0 },
+                            };
+                            Some((Ok(resp), (pos + len, false)))
                         }
-                    }))
-                }
+                    },
+                )),
             };
 
         Ok(Response::new(stream))

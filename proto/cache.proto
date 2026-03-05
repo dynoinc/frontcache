@@ -29,4 +29,5 @@ message ReadRangeRequest {
 
 message ReadRangeResponse {
   bytes data = 1;
+  uint64 object_size = 2;
 }

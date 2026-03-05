@@ -44,15 +44,29 @@ pub enum CacheError {
 }
 
 pub enum CacheHit {
-    Disk { reader: BlockReader, size: u64 },
-    Fresh { data: Bytes },
+    Disk {
+        reader: BlockReader,
+        block_size: u64,
+        object_size: u64,
+    },
+    Fresh {
+        data: Bytes,
+        object_size: u64,
+    },
 }
 
 impl CacheHit {
-    pub fn size(&self) -> u64 {
+    pub fn block_size(&self) -> u64 {
         match self {
-            CacheHit::Disk { size, .. } => *size,
+            CacheHit::Disk { block_size, .. } => *block_size,
             CacheHit::Fresh { data, .. } => data.len() as u64,
+        }
+    }
+
+    pub fn object_size(&self) -> u64 {
+        match self {
+            CacheHit::Disk { object_size, .. } => *object_size,
+            CacheHit::Fresh { object_size, .. } => *object_size,
         }
     }
 }
@@ -60,6 +74,7 @@ impl CacheHit {
 #[derive(Clone)]
 struct FreshHit {
     data: Bytes,
+    object_size: u64,
 }
 
 type DownloadResult = Arc<Result<FreshHit, CacheError>>;
@@ -178,13 +193,14 @@ impl Cache {
             let block = Arc::new(Block::new(
                 block_path.clone(),
                 record.entry.version.clone(),
-                record.entry.size,
+                record.entry.block_size,
+                record.entry.object_size,
                 last_accessed,
             ));
 
             for disk in &self.disks {
                 if block_path.starts_with(disk.path()) {
-                    disk.add_used(record.entry.size);
+                    disk.add_used(record.entry.block_size);
                     break;
                 }
             }
@@ -295,7 +311,8 @@ impl Cache {
                     );
                     Ok(CacheHit::Disk {
                         reader,
-                        size: block.size(),
+                        block_size: block.block_size(),
+                        object_size: block.object_size(),
                     })
                 }
                 Err(e)
@@ -330,6 +347,7 @@ impl Cache {
                 match outcome.as_ref() {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
+                        object_size: fresh.object_size,
                     }),
                     Err(e) => Err(e.clone()),
                 }
@@ -381,6 +399,7 @@ impl Cache {
                 match outcome.as_ref() {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
+                        object_size: fresh.object_size,
                     }),
                     Err(e) => Err(e.clone()),
                 }
@@ -391,7 +410,7 @@ impl Cache {
     fn evict_version(&self, obj_key: &ObjKey, version: &str, block: &Block) {
         for disk in &self.disks {
             if block.path().starts_with(disk.path()) {
-                disk.sub_used(block.size());
+                disk.sub_used(block.block_size());
                 break;
             }
         }
@@ -451,15 +470,17 @@ impl Cache {
             .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
 
         let data = read_result.data.clone();
+        let object_size = read_result.object_size;
         self.limiter
             .wait_for_bytes(data.len())
             .await
             .map_err(|_| CacheError::Throttled)?;
         let version = read_result.version.clone();
 
-        let pending = PendingBlock::prepare(disk.path(), read_result.data, version.clone())
-            .await
-            .map_err(|e| CacheError::CreateFile(Arc::new(e)))?;
+        let pending =
+            PendingBlock::prepare(disk.path(), read_result.data, version.clone(), object_size)
+                .await
+                .map_err(|e| CacheError::CreateFile(Arc::new(e)))?;
 
         let block_key: BlockKey = (object.clone(), *block_offset, version.clone());
         self.index
@@ -468,7 +489,8 @@ impl Cache {
                 BlockEntry {
                     path: pending.path().to_string_lossy().to_string(),
                     version: version.clone(),
-                    size: pending.size(),
+                    block_size: pending.block_size(),
+                    object_size,
                 },
             )])
             .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
@@ -483,7 +505,7 @@ impl Cache {
             }
         };
 
-        disk.add_used(block.size());
+        disk.add_used(block.block_size());
         if disk.used() > disk.high_watermark()
             && let Ok(permit) = disk.evict_lock().try_acquire_owned()
         {
@@ -501,7 +523,7 @@ impl Cache {
         self.mark_dirty(block_key, block.last_accessed());
 
         let block = Arc::new(block);
-        let block_size = block.size();
+        let block_size = block.block_size();
         if let Some(mut slot) = self.states.get_mut(obj_key) {
             slot.versions.insert(version.clone(), block);
         }
@@ -519,7 +541,7 @@ impl Cache {
             });
         }
 
-        Ok(FreshHit { data })
+        Ok(FreshHit { data, object_size })
     }
 
     pub async fn purge_bytes_from(&self, cache_dir: &Path, bytes_to_reclaim: u64) -> Result<()> {
@@ -533,7 +555,7 @@ impl Cache {
                         block.last_accessed(),
                         (obj_key.0.clone(), obj_key.1, version.clone()),
                         block.path().to_path_buf(),
-                        block.size(),
+                        block.block_size(),
                     ));
                 }
             }

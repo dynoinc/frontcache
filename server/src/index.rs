@@ -35,7 +35,8 @@ const LAST_ACCESSED_TABLE: TableDefinition<BlockKey, u64> = TableDefinition::new
 pub struct BlockEntry {
     pub path: String,
     pub version: String,
-    pub size: u64,
+    pub block_size: u64,
+    pub object_size: u64,
 }
 
 pub struct Index {

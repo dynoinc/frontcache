@@ -56,11 +56,17 @@ pub struct PendingBlock {
     tmp: tempfile::NamedTempFile,
     path: PathBuf,
     version: String,
-    size: u64,
+    block_size: u64,
+    object_size: u64,
 }
 
 impl PendingBlock {
-    pub async fn prepare(cache_dir: &Path, data: Bytes, version: String) -> Result<Self> {
+    pub async fn prepare(
+        cache_dir: &Path,
+        data: Bytes,
+        version: String,
+        object_size: u64,
+    ) -> Result<Self> {
         let id = ShortUuid::generate().to_string();
         let prefix = &id[..2];
         let filename = format!("{}.blk", id);
@@ -69,12 +75,12 @@ impl PendingBlock {
         tokio::fs::create_dir_all(&final_dir).await?;
 
         let tmp = tempfile::NamedTempFile::new_in(cache_dir.join("tmp"))?;
-        let size = data.len() as u64;
+        let block_size = data.len() as u64;
         let path = final_dir.join(&filename);
 
         let tmp = tokio::task::spawn_blocking(move || -> Result<tempfile::NamedTempFile> {
             let mut file = tmp;
-            file.as_file().set_len(size)?;
+            file.as_file().set_len(block_size)?;
             file.write_all(&data)?;
             file.as_file().sync_all()?;
             Ok(file)
@@ -85,7 +91,8 @@ impl PendingBlock {
             tmp,
             path,
             version,
-            size,
+            block_size,
+            object_size,
         })
     }
 
@@ -93,29 +100,43 @@ impl PendingBlock {
         &self.path
     }
 
-    pub fn size(&self) -> u64 {
-        self.size
+    pub fn block_size(&self) -> u64 {
+        self.block_size
     }
 
     pub fn persist(self) -> Result<Block> {
         self.tmp.persist(&self.path)?;
-        Ok(Block::new(self.path, self.version, self.size, Block::now()))
+        Ok(Block::new(
+            self.path,
+            self.version,
+            self.block_size,
+            self.object_size,
+            Block::now(),
+        ))
     }
 }
 
 pub struct Block {
     path: PathBuf,
     version: String,
-    size: u64,
+    block_size: u64,
+    object_size: u64,
     last_accessed: AtomicU64,
 }
 
 impl Block {
-    pub fn new(path: PathBuf, version: String, size: u64, last_accessed: u64) -> Self {
+    pub fn new(
+        path: PathBuf,
+        version: String,
+        block_size: u64,
+        object_size: u64,
+        last_accessed: u64,
+    ) -> Self {
         Self {
             path,
             version,
-            size,
+            block_size,
+            object_size,
             last_accessed: AtomicU64::new(last_accessed),
         }
     }
@@ -135,8 +156,12 @@ impl Block {
         &self.version
     }
 
-    pub fn size(&self) -> u64 {
-        self.size
+    pub fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
+    pub fn object_size(&self) -> u64 {
+        self.object_size
     }
 
     pub fn record_access(&self) {
