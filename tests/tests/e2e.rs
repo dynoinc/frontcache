@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 
-use frontcache_client::CacheClient;
+use frontcache_client::{CacheClient, CacheClientBuilder};
 use frontcache_proto::{
     cache_service_server::CacheServiceServer, router_service_server::RouterServiceServer,
 };
@@ -32,7 +32,7 @@ struct TestCluster {
     _tmp: TempDir,
 }
 
-async fn start_cluster() -> Result<TestCluster> {
+async fn start_cluster_with_block_size(block_size: u64) -> Result<TestCluster> {
     frontcache_metrics::init();
 
     let mock = Arc::new(InMemory::new());
@@ -53,22 +53,21 @@ async fn start_cluster() -> Result<TestCluster> {
         store,
         vec![disk],
         Arc::new(FetchLimiter::from_env()),
+        block_size,
     ));
     cache.init_from_disk()?;
 
-    // Cache server
     let server_listener = TcpListener::bind("127.0.0.1:0").await?;
     let server_addr = server_listener.local_addr()?;
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .layer(frontcache_metrics::layer())
-            .add_service(CacheServiceServer::new(CacheServer::new(cache)))
+            .add_service(CacheServiceServer::new(CacheServer::new(cache, 1024)))
             .serve_with_incoming(TcpListenerStream::new(server_listener))
             .await
             .unwrap();
     });
 
-    // Router
     let ring = Arc::new(Straw2Router::new());
     ring.add_node(server_addr.to_string());
     let router_listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -76,17 +75,22 @@ async fn start_cluster() -> Result<TestCluster> {
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .layer(frontcache_metrics::layer())
-            .add_service(RouterServiceServer::new(RouterServer::new(ring)))
+            .add_service(RouterServiceServer::new(RouterServer::new(
+                ring, block_size,
+            )))
             .serve_with_incoming(TcpListenerStream::new(router_listener))
             .await
             .unwrap();
     });
 
-    // Connect client (retry until servers are listening)
     let addr = format!("http://{}", router_addr);
     let client = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match CacheClient::new(addr.clone()).await {
+            match CacheClientBuilder::new(addr.clone())
+                .block_size(block_size)
+                .build()
+                .await
+            {
                 Ok(c) => return c,
                 Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
             }
@@ -100,6 +104,10 @@ async fn start_cluster() -> Result<TestCluster> {
         mock,
         _tmp: tmp,
     })
+}
+
+async fn start_cluster() -> Result<TestCluster> {
+    start_cluster_with_block_size(4096).await
 }
 
 async fn read_all(
@@ -160,15 +168,39 @@ async fn cache_hit() -> Result<()> {
 }
 
 #[tokio::test]
-async fn range_read() -> Result<()> {
+async fn range_read_fuzz() -> Result<()> {
     let c = start_cluster().await?;
-    let path = "test/range.dat";
+    let mut rng = fastrand::Rng::new();
 
-    let data: Vec<u8> = (0..=255u8).cycle().take(65536).collect();
-    seed(&c.mock, path, &data).await?;
+    for i in 0..20 {
+        let obj_size = rng.usize(1..65536);
+        let data: Vec<u8> = (0..obj_size).map(|_| rng.u8(..)).collect();
+        let path = format!("test/fuzz-{i}.dat");
+        seed(&c.mock, &path, &data).await?;
+        let key = object_key(&path);
 
-    let got = read_all(&c.client, &object_key(path), 1000..6000, None).await?;
-    assert_eq!(got, &data[1000..6000]);
+        for _ in 0..10 {
+            let start = rng.u64(..obj_size as u64);
+            // Allow end past object but within the last block that has data
+            let last_block_end = ((obj_size as u64 - 1) / 4096 + 1) * 4096;
+            let end = rng.u64(start + 1..=last_block_end);
+            let expected_end = end.min(obj_size as u64) as usize;
+
+            let got = read_all(&c.client, &key, start..end, None).await?;
+            assert_eq!(
+                got,
+                &data[start as usize..expected_end],
+                "stream mismatch at {start}..{end} (obj_size={obj_size})"
+            );
+
+            let got2 = c.client.read_range(&key, start..end, None).await?;
+            assert_eq!(
+                &got2[..],
+                &data[start as usize..expected_end],
+                "read_range mismatch at {start}..{end} (obj_size={obj_size})"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -186,8 +218,8 @@ async fn multi_block() -> Result<()> {
     let c = start_cluster().await?;
     let path = "test/big.dat";
 
-    // 20 MiB > 16 MiB block size — spans two blocks
-    let size = 20 * 1024 * 1024;
+    // 20 KiB > 4 KiB block size — spans five blocks
+    let size = 20 * 1024;
     let data: Vec<u8> = (0..=255u8).cycle().take(size).collect();
     seed(&c.mock, path, &data).await?;
 

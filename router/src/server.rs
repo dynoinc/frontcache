@@ -10,15 +10,14 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use crate::ring::Straw2Router;
 
-const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
-
 pub struct RouterServer {
     ring: Arc<Straw2Router>,
+    block_size: u64,
 }
 
 impl RouterServer {
-    pub fn new(ring: Arc<Straw2Router>) -> Self {
-        Self { ring }
+    pub fn new(ring: Arc<Straw2Router>, block_size: u64) -> Self {
+        Self { ring, block_size }
     }
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
@@ -49,7 +48,7 @@ impl RouterService for RouterServer {
         request: Request<LookupOwnerRequest>,
     ) -> Result<Response<LookupOwnerResponse>, Status> {
         let req = request.get_ref();
-        let block_offset = (req.offset / BLOCK_SIZE) * BLOCK_SIZE;
+        let block_offset = (req.offset / self.block_size) * self.block_size;
 
         let addrs = self
             .ring

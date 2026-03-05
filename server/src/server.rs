@@ -12,7 +12,7 @@ use opentelemetry::KeyValue;
 use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
-    cache::{BLOCK_SIZE, Cache, CacheError, CacheHit},
+    cache::{Cache, CacheError, CacheHit},
     store::StoreError,
 };
 
@@ -22,11 +22,8 @@ pub struct CacheServer {
 }
 
 impl CacheServer {
-    pub fn new(cache: Arc<Cache>) -> Self {
-        Self {
-            cache,
-            chunk_size: crate::env_or("FRONTCACHE_STREAM_CHUNK_SIZE", 256 * 1024),
-        }
+    pub fn new(cache: Arc<Cache>, chunk_size: usize) -> Self {
+        Self { cache, chunk_size }
     }
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
@@ -82,7 +79,8 @@ impl CacheService for CacheServer {
                 }
             })?;
 
-        let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
+        let bs = self.cache.block_size();
+        let block_offset = (offset / bs) * bs;
         let offset_in_block = (offset - block_offset) as usize;
         let block_len = hit.block_size() as usize;
         let object_size = hit.object_size();

@@ -26,6 +26,9 @@ struct Args {
 
     #[arg(long, default_value = "8080")]
     server_port: u16,
+
+    #[arg(long, default_value_t = 16 * 1024 * 1024)]
+    block_size: u64,
 }
 
 #[tokio::main]
@@ -57,7 +60,9 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!("Starting frontcache router on {}", args.listen);
-    RouterServer::new(ring).serve(args.listen).await?;
+    RouterServer::new(ring, args.block_size)
+        .serve(args.listen)
+        .await?;
 
     shutdown.cancel();
     if let Some(h) = watcher_handle {

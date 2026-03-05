@@ -34,6 +34,12 @@ struct Args {
 
     #[arg(long, default_value = "/var/lib/frontcache/index.db")]
     index_path: PathBuf,
+
+    #[arg(long, default_value_t = 16 * 1024 * 1024)]
+    block_size: u64,
+
+    #[arg(long, default_value_t = 256 * 1024)]
+    chunk_size: usize,
 }
 
 fn parse_size(s: &str) -> Result<u64> {
@@ -83,7 +89,13 @@ async fn main() -> Result<()> {
     let index = Arc::new(Index::open(args.index_path)?);
     let store = Arc::new(Store::new());
     let limiter = Arc::new(FetchLimiter::from_env());
-    let cache = Arc::new(Cache::new(index.clone(), store, disks, limiter));
+    let cache = Arc::new(Cache::new(
+        index.clone(),
+        store,
+        disks,
+        limiter,
+        args.block_size,
+    ));
 
     cache.init_from_disk()?;
 
@@ -92,7 +104,9 @@ async fn main() -> Result<()> {
     let flusher = start_flusher(cache.clone(), shutdown.clone());
 
     tracing::info!("Starting frontcache server on {}", args.listen);
-    CacheServer::new(cache.clone()).serve(args.listen).await?;
+    CacheServer::new(cache.clone(), args.chunk_size)
+        .serve(args.listen)
+        .await?;
 
     tracing::info!("Shutting down");
     shutdown.cancel();

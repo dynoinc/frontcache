@@ -722,6 +722,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "fastrand",
  "frontcache-client",
  "frontcache-metrics",
  "frontcache-proto",

@@ -19,3 +19,4 @@ tempfile = { workspace = true }
 object_store = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+fastrand = { workspace = true }

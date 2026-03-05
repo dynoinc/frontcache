@@ -151,6 +151,7 @@ fn bare_cache() -> BareCache {
         store,
         vec![disk],
         Arc::new(FetchLimiter::from_env()),
+        16 * 1024 * 1024,
     ));
     cache.init_from_disk().unwrap();
 
@@ -293,6 +294,7 @@ async fn shutdown_stops_background_tasks() -> Result<()> {
         store,
         vec![disk],
         Arc::new(FetchLimiter::from_env()),
+        16 * 1024 * 1024,
     ));
     cache.init_from_disk()?;
 

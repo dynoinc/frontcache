@@ -23,8 +23,6 @@ use crate::{
     store::{Store, StoreError},
 };
 
-pub const BLOCK_SIZE: u64 = 16 * 1024 * 1024;
-
 #[derive(Error, Debug, Clone)]
 pub enum CacheError {
     #[error("Failed to create block file")]
@@ -102,6 +100,7 @@ pub struct Cache {
     store: Arc<Store>,
     disks: Vec<Arc<Disk>>,
     limiter: Arc<FetchLimiter>,
+    block_size: u64,
 }
 
 enum Action {
@@ -137,6 +136,7 @@ impl Cache {
         store: Arc<Store>,
         disks: Vec<Arc<Disk>>,
         limiter: Arc<FetchLimiter>,
+        block_size: u64,
     ) -> Self {
         Self {
             states: DashMap::new(),
@@ -145,7 +145,12 @@ impl Cache {
             store,
             disks,
             limiter,
+            block_size,
         }
+    }
+
+    pub fn block_size(&self) -> u64 {
+        self.block_size
     }
 
     pub fn disks(&self) -> &[Arc<Disk>] {
@@ -248,7 +253,7 @@ impl Cache {
         version: Option<&str>,
     ) -> Result<CacheHit, CacheError> {
         let start = Instant::now();
-        let block_offset = (offset / BLOCK_SIZE) * BLOCK_SIZE;
+        let block_offset = (offset / self.block_size) * self.block_size;
         let obj_key: ObjKey = (object.to_string(), block_offset);
 
         let action = match self.states.entry(obj_key.clone()) {
@@ -465,7 +470,7 @@ impl Cache {
 
         let read_result = self
             .store
-            .read_range(object, *block_offset, BLOCK_SIZE)
+            .read_range(object, *block_offset, self.block_size)
             .await
             .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
 
