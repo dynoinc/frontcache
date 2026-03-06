@@ -6,7 +6,7 @@ metadata:
     {{- include "frontcache.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
-  type: {{ .Values.server.service.type }}
+  clusterIP: None
   ports:
     - port: {{ .Values.server.service.port }}
       targetPort: grpc

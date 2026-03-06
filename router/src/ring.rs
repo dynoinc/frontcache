@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -9,8 +10,14 @@ const VP_MASK: u64 = NUM_VPARTITIONS as u64 - 1;
 
 const REPLICAS: usize = 4;
 
+#[derive(Clone)]
+pub struct Node {
+    pub pod_name: String,
+    pub ip_addr: SocketAddr,
+}
+
 struct Snapshot {
-    servers: Vec<String>,
+    nodes: Vec<Node>,
     table: Vec<[u16; REPLICAS]>,
 }
 
@@ -31,50 +38,56 @@ impl Straw2Router {
     pub fn new() -> Self {
         Self {
             snapshot: RwLock::new(Arc::new(Snapshot {
-                servers: Vec::new(),
+                nodes: Vec::new(),
                 table: Vec::new(),
             })),
         }
     }
 
-    pub fn add_node(&self, addr: String) {
+    pub fn add_node(&self, node: Node) {
         let old = self.snapshot.read().clone();
-        let pos = match old.servers.binary_search(&addr) {
+        let pos = match old
+            .nodes
+            .binary_search_by(|n| n.pod_name.cmp(&node.pod_name))
+        {
             Ok(_) => return,
             Err(pos) => pos,
         };
-        let mut servers = old.servers.clone();
-        servers.insert(pos, addr);
-        self.commit(servers, "added");
+        let mut nodes = old.nodes.clone();
+        nodes.insert(pos, node);
+        self.commit(nodes, "added");
     }
 
-    pub fn remove_node(&self, addr: &str) {
+    pub fn remove_node(&self, pod_name: &str) {
         let old = self.snapshot.read().clone();
-        let pos = match old.servers.binary_search_by(|s| s.as_str().cmp(addr)) {
+        let pos = match old
+            .nodes
+            .binary_search_by(|n| n.pod_name.as_str().cmp(pod_name))
+        {
             Ok(pos) => pos,
             Err(_) => return,
         };
-        let mut servers = old.servers.clone();
-        servers.remove(pos);
-        self.commit(servers, "removed");
+        let mut nodes = old.nodes.clone();
+        nodes.remove(pos);
+        self.commit(nodes, "removed");
     }
 
-    pub fn set_servers(&self, mut servers: Vec<String>) {
-        servers.sort();
-        servers.dedup();
-        self.commit(servers, "sync");
+    pub fn set_servers(&self, mut nodes: Vec<Node>) {
+        nodes.sort_by(|a, b| a.pod_name.cmp(&b.pod_name));
+        nodes.dedup_by(|a, b| a.pod_name == b.pod_name);
+        self.commit(nodes, "sync");
     }
 
-    fn commit(&self, servers: Vec<String>, action: &'static str) {
-        let table = rebuild_table(&servers);
-        let len = servers.len();
-        *self.snapshot.write() = Arc::new(Snapshot { servers, table });
+    fn commit(&self, nodes: Vec<Node>, action: &'static str) {
+        let table = rebuild_table(&nodes);
+        let len = nodes.len();
+        *self.snapshot.write() = Arc::new(Snapshot { nodes, table });
         record_metrics(len, action);
     }
 
     pub fn get_owners(&self, object: &str, block_offset: u64) -> Option<Vec<String>> {
         let snap = self.snapshot.read().clone();
-        if snap.servers.is_empty() {
+        if snap.nodes.is_empty() {
             return None;
         }
         let key = format!("{}:{}", object, block_offset);
@@ -82,26 +95,26 @@ impl Straw2Router {
         let addrs = snap.table[vp]
             .iter()
             .filter(|&&idx| idx != u16::MAX)
-            .map(|&idx| snap.servers[idx as usize].clone())
+            .map(|&idx| snap.nodes[idx as usize].ip_addr.to_string())
             .collect::<Vec<_>>();
         Some(addrs)
     }
 }
 
-fn rebuild_table(servers: &[String]) -> Vec<[u16; REPLICAS]> {
-    if servers.is_empty() {
+fn rebuild_table(nodes: &[Node]) -> Vec<[u16; REPLICAS]> {
+    if nodes.is_empty() {
         return Vec::new();
     }
     (0..NUM_VPARTITIONS)
         .into_par_iter()
-        .map(|vp| straw2_select_top(vp as u64, servers))
+        .map(|vp| straw2_select_top(vp as u64, nodes))
         .collect()
 }
 
-fn straw2_select_top(vp: u64, servers: &[String]) -> [u16; REPLICAS] {
+fn straw2_select_top(vp: u64, nodes: &[Node]) -> [u16; REPLICAS] {
     let mut top = [(0u64, u16::MAX); REPLICAS];
-    for (i, server) in servers.iter().enumerate() {
-        let h = xxh3_64_with_seed(server.as_bytes(), vp);
+    for (i, node) in nodes.iter().enumerate() {
+        let h = xxh3_64_with_seed(node.pod_name.as_bytes(), vp);
         if let Some(pos) = top.iter().position(|&(th, _)| h > th) {
             top.copy_within(pos..REPLICAS - 1, pos + 1);
             top[pos] = (h, i as u16);

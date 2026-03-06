@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -12,7 +13,7 @@ use kube::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::ring::Straw2Router;
+use crate::ring::{Node, Straw2Router};
 
 pub struct K8sMembership {
     client: Client,
@@ -24,7 +25,7 @@ pub struct K8sMembership {
 struct PodInfo {
     name: String,
     ip: Option<String>,
-    addr: Option<String>,
+    addr: Option<SocketAddr>,
     ready: bool,
     terminating: bool,
 }
@@ -48,7 +49,9 @@ fn pod_info(pod: &Pod, port: u16) -> PodInfo {
                 .map(|c| c.status == "True")
         })
         .unwrap_or(false);
-    let addr = ip.as_ref().map(|ip| format!("{ip}:{port}"));
+    let addr = ip
+        .as_ref()
+        .and_then(|ip| format!("{ip}:{port}").parse().ok());
     PodInfo {
         name,
         ip,
@@ -59,9 +62,12 @@ fn pod_info(pod: &Pod, port: u16) -> PodInfo {
 }
 
 /// A pod is eligible for the ring when it has an IP, is Ready, and not terminating.
-fn eligible_addr(info: &PodInfo) -> Option<&str> {
+fn eligible(info: &PodInfo) -> Option<Node> {
     if info.ready && !info.terminating {
-        info.addr.as_deref()
+        Some(Node {
+            pod_name: info.name.clone(),
+            ip_addr: info.addr?,
+        })
     } else {
         None
     }
@@ -90,7 +96,7 @@ impl K8sMembership {
         let api: Api<Pod> = Api::namespaced(self.client, &self.namespace);
         let config = Config::default().labels(&self.label_selector);
         let mut watcher = std::pin::pin!(watcher(api, config).default_backoff());
-        let mut init_buf: Option<Vec<String>> = None;
+        let mut init_buf: Option<Vec<Node>> = None;
 
         loop {
             let event = tokio::select! {
@@ -107,23 +113,19 @@ impl K8sMembership {
             match event {
                 Event::Apply(pod) | Event::InitApply(pod) => {
                     let info = pod_info(&pod, self.port);
-                    let (action, msg) = if let Some(addr) = eligible_addr(&info) {
-                        if init_buf.as_mut().is_some_and(|buf| {
-                            buf.push(addr.to_owned());
-                            true
-                        }) {
+                    let (action, msg) = if let Some(node) = eligible(&info) {
+                        if let Some(buf) = init_buf.as_mut() {
+                            buf.push(node);
                             ("init_add", "Buffering eligible pod")
                         } else {
-                            ring.add_node(addr.to_owned());
+                            ring.add_node(node);
                             ("add", "Ring membership change")
                         }
-                    } else if let Some(addr) = &info.addr {
+                    } else {
                         if init_buf.is_none() {
-                            ring.remove_node(addr);
+                            ring.remove_node(&info.name);
                         }
                         ("remove", "Ring membership change")
-                    } else {
-                        ("skip", "No IP")
                     };
                     tracing::info!(
                         pod = %info.name, ip = ?info.ip,
@@ -133,13 +135,11 @@ impl K8sMembership {
                 }
                 Event::Delete(pod) => {
                     let info = pod_info(&pod, self.port);
-                    if let Some(addr) = &info.addr {
-                        tracing::info!(
-                            pod = %info.name, ip = ?info.ip,
-                            action = "remove", "Pod deleted"
-                        );
-                        ring.remove_node(addr);
-                    }
+                    tracing::info!(
+                        pod = %info.name, ip = ?info.ip,
+                        action = "remove", "Pod deleted"
+                    );
+                    ring.remove_node(&info.name);
                 }
                 Event::Init => {
                     tracing::info!("Watcher initialized, buffering initial sync");

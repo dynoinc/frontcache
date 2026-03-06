@@ -22,7 +22,6 @@ server:
       size: 200MiB
       k8sSizeLimit: 250Mi
   service:
-    type: ClusterIP
     port: 8080
 
 loadgen:

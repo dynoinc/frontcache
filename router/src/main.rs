@@ -7,7 +7,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 
-use frontcache_router::{membership::K8sMembership, ring::Straw2Router, server::RouterServer};
+use frontcache_router::{
+    membership::K8sMembership,
+    ring::{Node, Straw2Router},
+    server::RouterServer,
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
@@ -56,7 +60,11 @@ async fn main() -> Result<()> {
         }));
     } else {
         tracing::info!("No label selector configured, running in standalone mode");
-        ring.add_node(format!("localhost:{}", args.server_port));
+        let addr = format!("127.0.0.1:{}", args.server_port).parse().unwrap();
+        ring.add_node(Node {
+            pod_name: "localhost".into(),
+            ip_addr: addr,
+        });
     }
 
     tracing::info!("Starting frontcache router on {}", args.listen);
