@@ -1,11 +1,12 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "frontcache.fullname" . }}-server
   labels:
     {{- include "frontcache.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
 spec:
+  serviceName: {{ include "frontcache.fullname" . }}-server
   replicas: {{ .Values.replicaCount.server }}
   selector:
     matchLabels:

@@ -13,7 +13,10 @@ use frontcache_client::{CacheClient, CacheClientBuilder};
 use frontcache_proto::{
     cache_service_server::CacheServiceServer, router_service_server::RouterServiceServer,
 };
-use frontcache_router::{ring::Straw2Router, server::RouterServer};
+use frontcache_router::{
+    ring::{Node, Straw2Router},
+    server::RouterServer,
+};
 use frontcache_server::{
     cache::Cache, disk::Disk, index::Index, limiter::FetchLimiter, server::CacheServer,
     store::Store,
@@ -69,7 +72,10 @@ async fn start_cluster_with_block_size(block_size: u64) -> Result<TestCluster> {
     });
 
     let ring = Arc::new(Straw2Router::new());
-    ring.add_node(server_addr.to_string());
+    ring.add_node(Node {
+        pod_name: "test-server".into(),
+        ip_addr: server_addr,
+    });
     let router_listener = TcpListener::bind("127.0.0.1:0").await?;
     let router_addr = router_listener.local_addr()?;
     tokio::spawn(async move {
