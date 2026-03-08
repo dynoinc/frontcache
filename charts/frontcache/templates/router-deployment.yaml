@@ -32,6 +32,12 @@ spec:
             - name: grpc
               containerPort: 8081
               protocol: TCP
+          readinessProbe:
+            grpc:
+              port: 8081
+              service: cache.RouterService
+            periodSeconds: 2
+            failureThreshold: 2
           env:
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}

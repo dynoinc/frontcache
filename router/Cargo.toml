@@ -18,6 +18,7 @@ k8s-openapi = { workspace = true }
 clap = { workspace = true }
 tikv-jemallocator = { workspace = true }
 opentelemetry = { workspace = true }
+tonic-health = { workspace = true }
 futures-util = { workspace = true }
 xxhash-rust = { workspace = true }
 rayon = { workspace = true }

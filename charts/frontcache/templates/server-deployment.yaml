@@ -33,15 +33,16 @@ spec:
               containerPort: 8080
               protocol: TCP
           startupProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 8080
+              service: cache.CacheService
             initialDelaySeconds: 1
             periodSeconds: 2
             failureThreshold: 30
           readinessProbe:
-            tcpSocket:
-              port: grpc
-            initialDelaySeconds: 1
+            grpc:
+              port: 8080
+              service: cache.CacheService
             periodSeconds: 2
             failureThreshold: 2
           env:

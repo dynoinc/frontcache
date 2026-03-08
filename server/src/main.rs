@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use frontcache_proto::cache_service_server::CacheServiceServer;
 use frontcache_server::{
     cache::Cache,
     disk::{Disk, register_disk_metrics, start_flusher},
@@ -99,13 +100,18 @@ async fn main() -> Result<()> {
 
     cache.init_from_disk()?;
 
+    let health_reporter = tonic_health::server::HealthReporter::new();
+    health_reporter
+        .set_serving::<CacheServiceServer<CacheServer>>()
+        .await;
+
     let _disk_metrics = register_disk_metrics(cache.clone());
     let shutdown = CancellationToken::new();
     let flusher = start_flusher(cache.clone(), shutdown.clone());
 
     tracing::info!("Starting frontcache server on {}", args.listen);
     CacheServer::new(cache.clone(), args.chunk_size)
-        .serve(args.listen)
+        .serve(args.listen, health_reporter)
         .await?;
 
     tracing::info!("Shutting down");

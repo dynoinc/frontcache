@@ -10,6 +10,7 @@ use frontcache_proto::{
 use futures_util::Stream;
 use opentelemetry::KeyValue;
 use tonic::{Request, Response, Status, transport::Server};
+use tonic_health::server::HealthReporter;
 
 use crate::{
     cache::{Cache, CacheError, CacheHit},
@@ -27,18 +28,22 @@ impl CacheServer {
         Self { cache, chunk_size }
     }
 
-    pub async fn serve(self, addr: SocketAddr) -> Result<()> {
+    pub async fn serve(self, addr: SocketAddr, health_reporter: HealthReporter) -> Result<()> {
+        let health_service = tonic_health::pb::health_server::HealthServer::new(
+            tonic_health::server::HealthService::from_health_reporter(health_reporter.clone()),
+        );
         let svc = CacheServiceServer::new(self);
         Server::builder()
             .layer(frontcache_metrics::layer())
+            .add_service(health_service)
             .add_service(svc)
-            .serve_with_shutdown(addr, shutdown_signal())
+            .serve_with_shutdown(addr, shutdown_signal(health_reporter))
             .await?;
         Ok(())
     }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(reporter: HealthReporter) {
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
 
@@ -46,6 +51,10 @@ async fn shutdown_signal() {
         _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, starting graceful shutdown"),
         _ = sigterm.recv() => tracing::info!("Received SIGTERM, starting graceful shutdown"),
     }
+
+    reporter
+        .set_not_serving::<CacheServiceServer<CacheServer>>()
+        .await;
 }
 
 #[tonic::async_trait]

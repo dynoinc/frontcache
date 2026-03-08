@@ -7,6 +7,7 @@ use frontcache_proto::{
     router_service_server::{RouterService, RouterServiceServer},
 };
 use tonic::{Request, Response, Status, transport::Server};
+use tonic_health::server::HealthReporter;
 
 use crate::ring::Straw2Router;
 
@@ -22,17 +23,25 @@ impl RouterServer {
     }
 
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
+        let health_reporter = HealthReporter::new();
+        health_reporter
+            .set_serving::<RouterServiceServer<RouterServer>>()
+            .await;
+        let health_service = tonic_health::pb::health_server::HealthServer::new(
+            tonic_health::server::HealthService::from_health_reporter(health_reporter.clone()),
+        );
         let svc = RouterServiceServer::new(self);
         Server::builder()
             .layer(frontcache_metrics::layer())
+            .add_service(health_service)
             .add_service(svc)
-            .serve_with_shutdown(addr, shutdown_signal())
+            .serve_with_shutdown(addr, shutdown_signal(health_reporter))
             .await?;
         Ok(())
     }
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(reporter: HealthReporter) {
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
 
@@ -40,6 +49,10 @@ async fn shutdown_signal() {
         _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, starting graceful shutdown"),
         _ = sigterm.recv() => tracing::info!("Received SIGTERM, starting graceful shutdown"),
     }
+
+    reporter
+        .set_not_serving::<RouterServiceServer<RouterServer>>()
+        .await;
 }
 
 #[tonic::async_trait]

@@ -31,3 +31,4 @@ serde_json = { workspace = true }
 tokio-util = { workspace = true }
 governor = { workspace = true }
 opentelemetry = { workspace = true }
+tonic-health = { workspace = true }
