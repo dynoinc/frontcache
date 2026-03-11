@@ -14,8 +14,6 @@ use thiserror::Error;
 
 use crate::config::BucketConfig;
 
-const VERSION_HEADER: &str = "x-frontcache-version";
-
 #[derive(Error, Debug)]
 pub enum StoreError {
     #[error("Invalid key format: {0}")]
@@ -148,20 +146,13 @@ impl Store {
     }
 
     fn extract_version(result: &object_store::GetResult) -> String {
-        if let Some(version) = result
-            .attributes
-            .get(&object_store::Attribute::Metadata(VERSION_HEADER.into()))
-        {
-            version.to_string().trim_matches('"').to_string()
-        } else {
-            result
-                .meta
-                .e_tag
-                .as_deref()
-                .unwrap_or_default()
-                .trim_matches('"')
-                .to_string()
-        }
+        result
+            .meta
+            .e_tag
+            .as_deref()
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string()
     }
 
     pub async fn read_range(
