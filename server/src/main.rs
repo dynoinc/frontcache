@@ -47,14 +47,16 @@ struct Args {
 
 fn parse_size(s: &str) -> Result<u64> {
     let s = s.trim();
-    let (num, unit) = if let Some(n) = s.strip_suffix("GiB") {
+    let (num, unit) = if let Some(n) = s.strip_suffix("TiB") {
+        (n, 1024 * 1024 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("GiB") {
         (n, 1024 * 1024 * 1024)
     } else if let Some(n) = s.strip_suffix("MiB") {
         (n, 1024 * 1024)
     } else if let Some(n) = s.strip_suffix("KiB") {
         (n, 1024)
     } else {
-        bail!("Unknown size unit in '{}', use KiB/MiB/GiB", s);
+        bail!("Unknown size unit in '{}', use KiB/MiB/GiB/TiB", s);
     };
     let n: u64 = num.parse().context(format!("Invalid number in '{}'", s))?;
     Ok(n * unit)
