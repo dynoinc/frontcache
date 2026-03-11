@@ -1,16 +1,18 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use object_store::memory::InMemory;
 use object_store::{
-    Error as ObjectStoreError, GetOptions, ObjectStore as ObjStore, aws::AmazonS3Builder,
+    Error as ObjectStoreError, GetOptions, MultipartUpload, ObjectStore as ObjStore,
+    ObjectStoreExt, PutMultipartOptions, PutPayload, PutResult, aws::AmazonS3Builder,
     gcp::GoogleCloudStorageBuilder, path::Path as ObjPath,
 };
 use opentelemetry::KeyValue;
 use thiserror::Error;
 
-use std::sync::Arc;
+use crate::config::BucketConfig;
 
 const VERSION_HEADER: &str = "x-frontcache-version";
 
@@ -45,26 +47,25 @@ pub struct ReadResult {
 
 pub struct Store {
     pub backends: DashMap<(String, String), Arc<dyn ObjStore>>,
-}
-
-impl Default for Store {
-    fn default() -> Self {
-        Self::new()
-    }
+    config: Arc<BucketConfig>,
 }
 
 impl Store {
-    pub fn new() -> Self {
+    pub fn new(config: Arc<BucketConfig>) -> Self {
         Self {
             backends: DashMap::new(),
+            config,
         }
     }
 
-    fn parse_key(key: &str) -> Result<(String, String, String), StoreError> {
+    /// Parse key from `/<bucket>/<path>` format.
+    /// Returns (provider, bucket, path).
+    fn parse_key(&self, key: &str) -> Result<(String, String, String), StoreError> {
         let err = || StoreError::InvalidKey(key.to_string());
-        let (provider, rest) = key.split_once("://").ok_or_else(err)?;
-        let (bucket, path) = rest.split_once('/').ok_or_else(err)?;
-        Ok((provider.to_string(), bucket.to_string(), path.to_string()))
+        let stripped = key.strip_prefix('/').ok_or_else(err)?;
+        let (bucket, path) = stripped.split_once('/').ok_or_else(err)?;
+        let provider = self.config.provider_for(bucket).to_string();
+        Ok((provider, bucket.to_string(), path.to_string()))
     }
 
     async fn get_backend(
@@ -120,7 +121,7 @@ impl Store {
 
     pub async fn head(&self, key: &str) -> Result<String, StoreError> {
         let start = Instant::now();
-        let (provider, bucket, path) = Self::parse_key(key)?;
+        let (provider, bucket, path) = self.parse_key(key)?;
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
 
@@ -170,7 +171,7 @@ impl Store {
         length: u64,
     ) -> Result<ReadResult, StoreError> {
         let start = Instant::now();
-        let (provider, bucket, path) = Self::parse_key(key)?;
+        let (provider, bucket, path) = self.parse_key(key)?;
         let provider_label = Self::provider_label(&provider);
         let backend = self.get_backend(&provider, &bucket).await?;
         let obj_path = ObjPath::from(path);
@@ -214,5 +215,52 @@ impl Store {
             version,
             object_size,
         })
+    }
+
+    pub async fn put(&self, key: &str, data: Bytes) -> Result<PutResult, StoreError> {
+        let (provider, bucket, path) = self.parse_key(key)?;
+        let backend = self.get_backend(&provider, &bucket).await?;
+        let obj_path = ObjPath::from(path);
+        backend
+            .put(&obj_path, PutPayload::from(data))
+            .await
+            .map_err(|e| StoreError::from_object_store(e, key))
+    }
+
+    pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
+        let (provider, bucket, path) = self.parse_key(key)?;
+        let backend = self.get_backend(&provider, &bucket).await?;
+        let obj_path = ObjPath::from(path);
+        backend
+            .delete(&obj_path)
+            .await
+            .map_err(|e| StoreError::from_object_store(e, key))
+    }
+
+    pub async fn list(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+    ) -> Result<object_store::ListResult, StoreError> {
+        let provider = self.config.provider_for(bucket).to_string();
+        let backend = self.get_backend(&provider, bucket).await?;
+        let obj_prefix = prefix.map(ObjPath::from);
+        backend
+            .list_with_delimiter(obj_prefix.as_ref())
+            .await
+            .map_err(StoreError::Backend)
+    }
+
+    pub async fn create_multipart(
+        &self,
+        key: &str,
+    ) -> Result<Box<dyn MultipartUpload>, StoreError> {
+        let (provider, bucket, path) = self.parse_key(key)?;
+        let backend = self.get_backend(&provider, &bucket).await?;
+        let obj_path = ObjPath::from(path);
+        backend
+            .put_multipart_opts(&obj_path, PutMultipartOptions::default())
+            .await
+            .map_err(|e| StoreError::from_object_store(e, key))
     }
 }

@@ -1,0 +1,16 @@
+[package]
+name = "frontcache-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+frontcache-metrics = { path = "../metrics" }
+object_store = { workspace = true }
+dashmap = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+opentelemetry = { workspace = true }

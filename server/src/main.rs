@@ -7,15 +7,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use frontcache_proto::cache_service_server::CacheServiceServer;
 use frontcache_server::{
     cache::Cache,
     disk::{Disk, register_disk_metrics, start_flusher},
     index::Index,
     limiter::FetchLimiter,
     server::CacheServer,
-    store::Store,
 };
+use frontcache_store::{BucketConfig, Store};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
@@ -41,6 +40,9 @@ struct Args {
 
     #[arg(long, default_value_t = 256 * 1024)]
     chunk_size: usize,
+
+    #[arg(long, help = "Path to bucket config YAML file")]
+    bucket_config: Option<PathBuf>,
 }
 
 fn parse_size(s: &str) -> Result<u64> {
@@ -72,6 +74,8 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    let bucket_config = Arc::new(BucketConfig::load(args.bucket_config.as_deref())?);
+
     let mut disks = Vec::new();
     for entry in &args.cache_dirs {
         let (path, capacity) = parse_cache_dir(entry)?;
@@ -88,7 +92,7 @@ async fn main() -> Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
     let index = Arc::new(Index::open(args.index_path)?);
-    let store = Arc::new(Store::new());
+    let store = Arc::new(Store::new(bucket_config));
     let limiter = Arc::new(FetchLimiter::from_env());
     let cache = Arc::new(Cache::new(
         index.clone(),
@@ -100,18 +104,13 @@ async fn main() -> Result<()> {
 
     cache.init_from_disk()?;
 
-    let health_reporter = tonic_health::server::HealthReporter::new();
-    health_reporter
-        .set_serving::<CacheServiceServer<CacheServer>>()
-        .await;
-
     let _disk_metrics = register_disk_metrics(cache.clone());
     let shutdown = CancellationToken::new();
     let flusher = start_flusher(cache.clone(), shutdown.clone());
 
     tracing::info!("Starting frontcache server on {}", args.listen);
     CacheServer::new(cache.clone(), args.chunk_size)
-        .serve(args.listen, health_reporter)
+        .serve(args.listen)
         .await?;
 
     tracing::info!("Shutting down");

@@ -67,7 +67,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "sum(rate(rpc_duration_ms_count{exported_job=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m]))",
+              "expr": "sum(rate(http_duration_ms_count{exported_job=\"frontcache_server\", operation=\"GetObject\"}[5m]))",
               "legendFormat": "qps",
               "refId": "A"
             }
@@ -320,8 +320,8 @@ data:
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(rpc_duration_ms_count{exported_job=\"frontcache_client\"}[5m])) by (rpc_method, rpc_grpc_status)",
-              "legendFormat": "{{`{{rpc_method}}`}} / {{`{{rpc_grpc_status}}`}}",
+              "expr": "sum(rate(http_duration_ms_count{exported_job=\"frontcache_client\"}[5m])) by (operation, http_status)",
+              "legendFormat": "{{`{{operation}}`}} / {{`{{http_status}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -360,8 +360,8 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_ms_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, rpc_method))",
-              "legendFormat": "{{`{{rpc_method}}`}}",
+              "expr": "histogram_quantile(0.50, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, operation))",
+              "legendFormat": "{{`{{operation}}`}}",
               "refId": "A"
             }
           ]
@@ -399,8 +399,8 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_ms_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, rpc_method))",
-              "legendFormat": "{{`{{rpc_method}}`}}",
+              "expr": "histogram_quantile(0.99, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, operation))",
+              "legendFormat": "{{`{{operation}}`}}",
               "refId": "A"
             }
           ]
@@ -447,8 +447,8 @@ data:
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(rpc_duration_ms_count{exported_job=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (rpc_grpc_status)",
-              "legendFormat": "{{`{{rpc_grpc_status}}`}}",
+              "expr": "sum(rate(http_duration_ms_count{exported_job=\"frontcache_router\", operation=\"GetObject\"}[5m])) by (http_status)",
+              "legendFormat": "{{`{{http_status}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -487,7 +487,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_ms_bucket{exported_job=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.50, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_router\", operation=\"GetObject\"}[5m])) by (le))",
               "legendFormat": "p50",
               "refId": "A"
             }
@@ -526,7 +526,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_ms_bucket{exported_job=\"frontcache_router\", rpc_method=\"LookupOwner\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.99, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_router\", operation=\"GetObject\"}[5m])) by (le))",
               "legendFormat": "p99",
               "refId": "A"
             }
@@ -652,8 +652,8 @@ data:
           "targets": [
             {
               "editorMode": "code",
-              "expr": "sum(rate(rpc_duration_ms_count{exported_job=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (rpc_grpc_status)",
-              "legendFormat": "{{`{{rpc_grpc_status}}`}}",
+              "expr": "sum(rate(http_duration_ms_count{exported_job=\"frontcache_server\", operation=\"GetObject\"}[5m])) by (http_status)",
+              "legendFormat": "{{`{{http_status}}`}}",
               "range": true,
               "refId": "A"
             }
@@ -692,7 +692,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(rpc_duration_ms_bucket{exported_job=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.50, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_server\", operation=\"GetObject\"}[5m])) by (le))",
               "legendFormat": "p50",
               "refId": "A"
             }
@@ -731,7 +731,7 @@ data:
           "pluginVersion": "12.3.3",
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum(rate(rpc_duration_ms_bucket{exported_job=\"frontcache_server\", rpc_method=\"ReadRange\"}[5m])) by (le))",
+              "expr": "histogram_quantile(0.99, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_server\", operation=\"GetObject\"}[5m])) by (le))",
               "legendFormat": "p99",
               "refId": "A"
             }

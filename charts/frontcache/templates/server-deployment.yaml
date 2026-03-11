@@ -28,21 +28,23 @@ spec:
             - {{ range $i, $dir := .Values.server.cacheDirs }}{{ if $i }},{{ end }}{{ $dir.path }}:{{ $dir.size }}{{ end }}
             - "--index-path"
             - "/var/lib/frontcache/index.db"
+            - "--bucket-config"
+            - "/etc/frontcache/buckets.yaml"
           ports:
-            - name: grpc
+            - name: http
               containerPort: 8080
               protocol: TCP
           startupProbe:
-            grpc:
+            httpGet:
+              path: /healthz
               port: 8080
-              service: cache.CacheService
             initialDelaySeconds: 1
             periodSeconds: 2
             failureThreshold: 30
           readinessProbe:
-            grpc:
+            httpGet:
+              path: /healthz
               port: 8080
-              service: cache.CacheService
             periodSeconds: 2
             failureThreshold: 2
           env:
@@ -74,6 +76,8 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           volumeMounts:
+            - name: bucket-config
+              mountPath: /etc/frontcache
             - name: index
               mountPath: /var/lib/frontcache
             {{- range $i, $dir := .Values.server.cacheDirs }}
@@ -85,6 +89,9 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
       volumes:
+        - name: bucket-config
+          configMap:
+            name: {{ include "frontcache.fullname" . }}-bucket-config
         - name: index
           emptyDir: {}
         {{- range $i, $dir := .Values.server.cacheDirs }}

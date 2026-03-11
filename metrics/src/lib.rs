@@ -8,14 +8,16 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
-use tonic::Code;
 use tower::{Layer, Service, ServiceExt};
 
 static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
+/// Header set by handlers to identify the S3 operation for metrics.
+pub const OP_HEADER: &str = "x-fc-op";
+
 pub struct Metrics {
-    rpc_duration: Histogram<f64>,
+    http_duration: Histogram<f64>,
 
     pub store_duration: Histogram<f64>,
     pub store_read_bytes: Histogram<f64>,
@@ -56,9 +58,9 @@ pub fn init() {
     ];
 
     METRICS.get_or_init(|| Metrics {
-        rpc_duration: meter
-            .f64_histogram("rpc_duration_ms")
-            .with_description("RPC request duration in milliseconds")
+        http_duration: meter
+            .f64_histogram("http_duration_ms")
+            .with_description("HTTP request duration in milliseconds")
             .with_boundaries(latency_buckets.clone())
             .build(),
 
@@ -158,35 +160,31 @@ where
     }
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
-        let method = req
-            .uri()
-            .path()
-            .split('/')
-            .next_back()
-            .unwrap_or("unknown")
-            .to_string();
         let start = Instant::now();
         let inner = self.inner.clone();
 
         Box::pin(async move {
             let result = inner.oneshot(req).await;
 
-            let status = match &result {
-                Ok(resp) => resp
-                    .headers()
-                    .get("grpc-status")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<i32>().ok())
-                    .map(|code| format!("{:?}", Code::from_i32(code)))
-                    .unwrap_or_else(|| "Ok".to_string()),
-                Err(_) => "Unknown".to_string(),
+            let (status, operation) = match &result {
+                Ok(resp) => {
+                    let status = resp.status().as_u16().to_string();
+                    let operation = resp
+                        .headers()
+                        .get(OP_HEADER)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    (status, operation)
+                }
+                Err(_) => ("error".to_string(), "unknown".to_string()),
             };
 
-            get().rpc_duration.record(
+            get().http_duration.record(
                 start.elapsed().as_secs_f64() * 1000.0,
                 &[
-                    KeyValue::new("rpc.method", method),
-                    KeyValue::new("rpc.grpc.status", status),
+                    KeyValue::new("operation", operation),
+                    KeyValue::new("http.status", status),
                 ],
             );
 

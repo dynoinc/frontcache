@@ -15,12 +15,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use bytes::Bytes;
 
+use frontcache_store::{Store, StoreError};
+
 use crate::{
     block::{Block, BlockReader, PendingBlock},
     disk::{Disk, select_disk},
     index::{BlockEntry, BlockKey, Index, IndexError},
     limiter::FetchLimiter,
-    store::{Store, StoreError},
 };
 
 #[derive(Error, Debug, Clone)]
@@ -46,10 +47,12 @@ pub enum CacheHit {
         reader: BlockReader,
         block_size: u64,
         object_size: u64,
+        version: String,
     },
     Fresh {
         data: Bytes,
         object_size: u64,
+        version: String,
     },
 }
 
@@ -67,12 +70,20 @@ impl CacheHit {
             CacheHit::Fresh { object_size, .. } => *object_size,
         }
     }
+
+    pub fn version(&self) -> &str {
+        match self {
+            CacheHit::Disk { version, .. } => version,
+            CacheHit::Fresh { version, .. } => version,
+        }
+    }
 }
 
 #[derive(Clone)]
 struct FreshHit {
     data: Bytes,
     object_size: u64,
+    version: String,
 }
 
 type DownloadResult = Arc<Result<FreshHit, CacheError>>;
@@ -319,6 +330,7 @@ impl Cache {
                         reader,
                         block_size: block.block_size(),
                         object_size: block.object_size(),
+                        version: block.version().to_string(),
                     })
                 }
                 Err(e)
@@ -354,6 +366,7 @@ impl Cache {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
                         object_size: fresh.object_size,
+                        version: fresh.version.clone(),
                     }),
                     Err(e) => Err(e.clone()),
                 }
@@ -406,6 +419,7 @@ impl Cache {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
                         object_size: fresh.object_size,
+                        version: fresh.version.clone(),
                     }),
                     Err(e) => Err(e.clone()),
                 }
@@ -547,7 +561,11 @@ impl Cache {
             });
         }
 
-        Ok(FreshHit { data, object_size })
+        Ok(FreshHit {
+            data,
+            object_size,
+            version,
+        })
     }
 
     pub async fn purge_bytes_from(&self, cache_dir: &Path, bytes_to_reclaim: u64) -> Result<()> {

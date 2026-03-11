@@ -1,7 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-use frontcache_client::CacheClient;
-use futures::StreamExt;
 use std::time::Duration;
 
 #[global_allocator]
@@ -22,7 +20,7 @@ struct Args {
     #[arg(long, env = "SLEEP_MS", default_value_t = 100)]
     sleep_ms: u64,
 
-    #[arg(long, env = "BUCKET", default_value = "s3://test")]
+    #[arg(long, env = "BUCKET", default_value = "test")]
     bucket: String,
 }
 
@@ -32,42 +30,89 @@ async fn main() -> Result<()> {
     frontcache_metrics::init();
 
     let args = Args::parse();
-    let file_size = args.file_size_mb * 1024 * 1024;
+    let file_size = (args.file_size_mb * 1024 * 1024) as usize;
     let sleep_dur = Duration::from_millis(args.sleep_ms);
     let files: Vec<String> = (1..=args.file_count)
-        .map(|i| format!("{}/file{i}.bin", args.bucket))
+        .map(|i| format!("/{}/file{i}.bin", args.bucket))
         .collect();
 
-    tracing::info!(router = %args.router, files = files.len(), file_size, "Connecting");
-    let client = CacheClient::new(args.router).await?;
-    tracing::info!("Connected");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
+
+    tracing::info!(router = %args.router, "Waiting for router...");
+    loop {
+        match client.get(format!("{}/healthz", args.router)).send().await {
+            Ok(r) if r.status().is_success() => break,
+            _ => tokio::time::sleep(Duration::from_secs(2)).await,
+        }
+    }
+
+    tracing::info!(files = files.len(), file_size, "Seeding files via router");
+    for key in &files {
+        let url = format!("{}{}", args.router, key);
+        let data: Vec<u8> = (0..file_size).map(|_| fastrand::u8(..)).collect();
+        client
+            .put(&url)
+            .body(data)
+            .send()
+            .await?
+            .error_for_status()?;
+        tracing::info!("Seeded {}", key);
+    }
+    tracing::info!("Seeding complete, starting reads");
 
     let mut count = 0u64;
     loop {
         let idx = fastrand::usize(..files.len());
-        let offset = fastrand::u64(..(file_size / 4096)) * 4096;
+        let key = &files[idx];
 
-        match drain(&client, &files[idx], offset).await {
+        // Mix of GET (range read) and HEAD requests
+        let result = if fastrand::u8(..) < 200 {
+            let offset = fastrand::u64(..(file_size as u64 / 4096)) * 4096;
+            read_range(&client, &args.router, key, offset).await
+        } else {
+            head_object(&client, &args.router, key).await
+        };
+
+        match result {
             Ok(_) => {
                 count += 1;
                 if count.is_multiple_of(100) {
                     println!("Completed {count} reads");
                 }
             }
-            Err(e) => tracing::warn!("Error reading {} offset={}: {}", files[idx], offset, e),
+            Err(e) => tracing::warn!("Error on {}: {}", key, e),
         }
 
         tokio::time::sleep(sleep_dur).await;
     }
 }
 
-async fn drain(client: &CacheClient, file: &str, offset: u64) -> Result<usize> {
-    let mut stream = client
-        .stream_range(file, offset..offset + 4096, Some("v1"))
-        .await?;
-    let mut nbytes = 0;
-    while let Some(chunk) = stream.next().await {
-        nbytes += chunk?.len();
-    }
-    Ok(nbytes)
+async fn read_range(
+    client: &reqwest::Client,
+    router: &str,
+    key: &str,
+    offset: u64,
+) -> Result<usize> {
+    let url = format!("{}{}", router, key);
+    let resp = client
+        .get(&url)
+        .header("Range", format!("bytes={}-{}", offset, offset + 4095))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(resp.bytes().await?.len())
+}
+
+async fn head_object(client: &reqwest::Client, router: &str, key: &str) -> Result<usize> {
+    let url = format!("{}{}", router, key);
+    let resp = client.head(&url).send().await?.error_for_status()?;
+    let size = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
+    Ok(size)
 }

@@ -18,7 +18,7 @@ spec:
         app.kubernetes.io/component: loadgen
     spec:
       initContainers:
-        - name: seed
+        - name: setup-buckets
           image: minio/mc:latest
           command:
             - /bin/sh
@@ -31,12 +31,7 @@ spec:
               {{- range .Values.minio.buckets }}
               mc mb --ignore-existing local/{{ . }}
               {{- end }}
-              for i in $(seq 1 {{ .Values.loadgen.fileCount }}); do
-                echo "Seeding test/file${i}.bin ({{ .Values.loadgen.fileSizeMB }}MB)..."
-                head -c $(( {{ .Values.loadgen.fileSizeMB }} * 1048576 )) /dev/urandom > /tmp/file${i}.bin
-                mc cp --attr "x-frontcache-version=v1" /tmp/file${i}.bin local/test/file${i}.bin
-              done
-              echo "Seeding complete."
+              echo "Buckets ready."
       containers:
         - name: loadgen
           image: {{ include "frontcache.image" . }}
@@ -51,6 +46,8 @@ spec:
               value: {{ .Values.loadgen.fileSizeMB | quote }}
             - name: SLEEP_MS
               value: {{ .Values.loadgen.sleepMs | quote }}
+            - name: BUCKET
+              value: "test"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

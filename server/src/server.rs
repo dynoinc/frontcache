@@ -1,21 +1,24 @@
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::Result;
-use frontcache_proto::{
-    ReadRangeRequest, ReadRangeResponse,
-    cache_service_server::{CacheService, CacheServiceServer},
+use axum::{
+    Router,
+    body::Body,
+    extract::{Request, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::get,
 };
-use futures_util::Stream;
 use opentelemetry::KeyValue;
-use tonic::{Request, Response, Status, transport::Server};
-use tonic_health::server::HealthReporter;
 
-use crate::{
-    cache::{Cache, CacheError, CacheHit},
-    store::StoreError,
-};
+use crate::cache::{Cache, CacheError, CacheHit};
+use frontcache_store::StoreError;
+
+#[derive(Clone)]
+struct AppState {
+    cache: Arc<Cache>,
+    chunk_size: usize,
+}
 
 pub struct CacheServer {
     cache: Arc<Cache>,
@@ -28,22 +31,30 @@ impl CacheServer {
         Self { cache, chunk_size }
     }
 
-    pub async fn serve(self, addr: SocketAddr, health_reporter: HealthReporter) -> Result<()> {
-        let health_service = tonic_health::pb::health_server::HealthServer::new(
-            tonic_health::server::HealthService::from_health_reporter(health_reporter.clone()),
-        );
-        let svc = CacheServiceServer::new(self);
-        Server::builder()
+    pub fn into_router(self) -> Router {
+        let state = AppState {
+            cache: self.cache,
+            chunk_size: self.chunk_size,
+        };
+        Router::new()
+            .route("/healthz", get(healthz))
+            .route("/{*key}", get(get_object).head(head_object))
             .layer(frontcache_metrics::layer())
-            .add_service(health_service)
-            .add_service(svc)
-            .serve_with_shutdown(addr, shutdown_signal(health_reporter))
+            .with_state(state)
+    }
+
+    pub async fn serve(self, addr: SocketAddr) -> anyhow::Result<()> {
+        let app = self.into_router();
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!("Server listening on {}", addr);
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
             .await?;
         Ok(())
     }
 }
 
-async fn shutdown_signal(reporter: HealthReporter) {
+async fn shutdown_signal() {
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
 
@@ -51,117 +62,142 @@ async fn shutdown_signal(reporter: HealthReporter) {
         _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, starting graceful shutdown"),
         _ = sigterm.recv() => tracing::info!("Received SIGTERM, starting graceful shutdown"),
     }
-
-    reporter
-        .set_not_serving::<CacheServiceServer<CacheServer>>()
-        .await;
 }
 
-#[tonic::async_trait]
-impl CacheService for CacheServer {
-    type ReadRangeStream = Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>>;
+async fn healthz() -> StatusCode {
+    StatusCode::OK
+}
 
-    async fn read_range(
-        &self,
-        request: Request<ReadRangeRequest>,
-    ) -> Result<Response<Self::ReadRangeStream>, Status> {
-        let req = request.get_ref();
-        let offset = req.offset;
-        let length = req.length;
+/// Parse HTTP Range header: `bytes=N-M` or `bytes=N-`
+/// Returns (offset, Option<end_exclusive>)
+fn parse_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
+    let range = headers.get(header::RANGE)?.to_str().ok()?;
+    let range = range.strip_prefix("bytes=")?;
+    let (start, end) = range.split_once('-')?;
+    let start: u64 = start.parse().ok()?;
+    let end = if end.is_empty() {
+        None
+    } else {
+        Some(end.parse::<u64>().ok()? + 1) // HTTP range end is inclusive, convert to exclusive
+    };
+    Some((start, end))
+}
 
-        let hit = self
-            .cache
-            .get(&req.key, offset, req.version.as_deref())
-            .await
-            .map_err(|e| {
-                let msg = format!("{:?}", e);
-                match &e {
-                    CacheError::StoreRead(store_err) => match store_err.as_ref() {
-                        StoreError::InvalidKey(_)
-                        | StoreError::InvalidRange { .. }
-                        | StoreError::UnsupportedProvider(_) => Status::invalid_argument(msg),
-                        StoreError::NotFound(_) => Status::not_found(msg),
-                        StoreError::Backend(_) => Status::internal(msg),
-                    },
-                    CacheError::VersionMismatch { .. } => Status::failed_precondition(msg),
-                    CacheError::Throttled => Status::resource_exhausted(msg),
-                    _ => Status::internal(msg),
-                }
-            })?;
+fn cache_error_to_response(e: CacheError) -> Response {
+    let msg = format!("{:?}", e);
+    let status = match &e {
+        CacheError::StoreRead(store_err) => match store_err.as_ref() {
+            StoreError::InvalidKey(_)
+            | StoreError::InvalidRange { .. }
+            | StoreError::UnsupportedProvider(_) => StatusCode::BAD_REQUEST,
+            StoreError::NotFound(_) => StatusCode::NOT_FOUND,
+            StoreError::Backend(_) => StatusCode::BAD_GATEWAY,
+        },
+        CacheError::VersionMismatch { .. } => StatusCode::PRECONDITION_FAILED,
+        CacheError::Throttled => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, msg).into_response()
+}
 
-        let bs = self.cache.block_size();
-        let block_offset = (offset / bs) * bs;
-        let offset_in_block = (offset - block_offset) as usize;
-        let block_len = hit.block_size() as usize;
-        let object_size = hit.object_size();
+async fn get_object(State(state): State<AppState>, req: Request) -> Response {
+    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let headers = req.headers().clone();
 
-        if offset_in_block >= block_len {
-            return Err(Status::out_of_range(format!(
-                "offset {} beyond block size {}",
-                offset_in_block, block_len
-            )));
-        }
+    let (offset, end) = parse_range(&headers).unwrap_or_default();
 
-        let req_len = usize::try_from(length)
-            .map_err(|_| Status::invalid_argument(format!("length {length} does not fit usize")))?;
-        let req_end = offset_in_block.checked_add(req_len).ok_or_else(|| {
-            Status::out_of_range(format!(
-                "offset {offset_in_block} + length {length} overflows block range"
-            ))
-        })?;
-        let chunk_end = block_len.min(req_end);
-        frontcache_metrics::get().disk_byte_changes.add(
-            (chunk_end - offset_in_block) as u64,
-            &[KeyValue::new("action", "served")],
-        );
+    let version = headers
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_string());
 
-        let chunk_size = self.chunk_size;
-        let stream: Pin<Box<dyn Stream<Item = Result<ReadRangeResponse, Status>> + Send>> =
-            match hit {
-                CacheHit::Disk { reader, .. } => Box::pin(futures_util::stream::try_unfold(
-                    (reader, offset_in_block, true),
-                    move |(reader, pos, first)| async move {
-                        if pos >= chunk_end {
-                            return Ok(None);
-                        }
-                        let len = chunk_size.min(chunk_end - pos);
-                        let chunk = reader
-                            .read_chunk(pos as u64, len)
-                            .await
-                            .map_err(|e| Status::internal(format!("read_chunk: {e}")))?;
-                        let chunk_len = chunk.len();
-                        if chunk_len != len {
-                            return Err(Status::data_loss(format!(
-                                "short read at offset {pos}: expected {len} bytes, got {chunk_len}"
-                            )));
-                        }
-                        let resp = ReadRangeResponse {
-                            data: chunk,
-                            object_size: if first { object_size } else { 0 },
-                        };
-                        Ok(Some((resp, (reader, pos + chunk_len, false))))
-                    },
-                )),
-                CacheHit::Fresh { data, .. } => Box::pin(futures_util::stream::unfold(
-                    (offset_in_block, true),
-                    move |(pos, first)| {
-                        let data = data.clone();
-                        async move {
-                            if pos >= chunk_end {
-                                return None;
-                            }
-                            let len = chunk_size.min(chunk_end - pos);
-                            let chunk = data.slice(pos..pos + len);
-                            let resp = ReadRangeResponse {
-                                data: chunk,
-                                object_size: if first { object_size } else { 0 },
-                            };
-                            Some((Ok(resp), (pos + len, false)))
-                        }
-                    },
-                )),
-            };
+    let hit = match state.cache.get(&key, offset, version.as_deref()).await {
+        Ok(hit) => hit,
+        Err(e) => return cache_error_to_response(e),
+    };
 
-        Ok(Response::new(stream))
+    let bs = state.cache.block_size();
+    let block_offset = (offset / bs) * bs;
+    let offset_in_block = (offset - block_offset) as usize;
+    let block_len = hit.block_size() as usize;
+    let object_size = hit.object_size();
+    let etag = hit.version().to_string();
+
+    if offset_in_block >= block_len {
+        return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
     }
+
+    let req_end = match end {
+        Some(e) => {
+            let e_in_block = (e - block_offset) as usize;
+            block_len.min(e_in_block)
+        }
+        None => block_len,
+    };
+    let chunk_end = req_end;
+    let serve_bytes = chunk_end - offset_in_block;
+
+    frontcache_metrics::get()
+        .disk_byte_changes
+        .add(serve_bytes as u64, &[KeyValue::new("action", "served")]);
+
+    let chunk_size = state.chunk_size;
+    let body: Body = match hit {
+        CacheHit::Disk { reader, .. } => Body::from_stream(futures_util::stream::try_unfold(
+            (reader, offset_in_block),
+            move |(reader, pos)| async move {
+                if pos >= chunk_end {
+                    return Ok::<_, std::io::Error>(None);
+                }
+                let len = chunk_size.min(chunk_end - pos);
+                let chunk = reader
+                    .read_chunk(pos as u64, len)
+                    .await
+                    .map_err(std::io::Error::other)?;
+                let chunk_len = chunk.len();
+                Ok(Some((chunk, (reader, pos + chunk_len))))
+            },
+        )),
+        CacheHit::Fresh { data, .. } => Body::from(data.slice(offset_in_block..chunk_end)),
+    };
+
+    let range_start = offset;
+    let range_end = block_offset + chunk_end as u64 - 1; // inclusive
+
+    Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header(
+            header::CONTENT_RANGE,
+            format!("bytes {}-{}/{}", range_start, range_end, object_size),
+        )
+        .header(header::CONTENT_LENGTH, serve_bytes.to_string())
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::ETAG, format!("\"{}\"", etag))
+        .header(frontcache_metrics::OP_HEADER, "GetObject")
+        .body(body)
+        .unwrap()
+}
+
+async fn head_object(State(state): State<AppState>, req: Request) -> Response {
+    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+
+    let version = req
+        .headers()
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_string());
+
+    let hit = match state.cache.get(&key, 0, version.as_deref()).await {
+        Ok(hit) => hit,
+        Err(e) => return cache_error_to_response(e),
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_LENGTH, hit.object_size().to_string())
+        .header(header::ETAG, format!("\"{}\"", hit.version()))
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(frontcache_metrics::OP_HEADER, "HeadObject")
+        .body(Body::empty())
+        .unwrap()
 }

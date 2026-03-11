@@ -28,14 +28,16 @@ spec:
             - {{ default (include "frontcache.serverLabelSelector" .) .Values.router.label | quote }}
             - "--server-port"
             - {{ .Values.router.serverPort | quote }}
+            - "--bucket-config"
+            - "/etc/frontcache/buckets.yaml"
           ports:
-            - name: grpc
+            - name: http
               containerPort: 8081
               protocol: TCP
           readinessProbe:
-            grpc:
+            httpGet:
+              path: /healthz
               port: 8081
-              service: cache.RouterService
             periodSeconds: 2
             failureThreshold: 2
           env:
@@ -53,10 +55,27 @@ spec:
               value: "service.instance.id=$(POD_NAME)"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://{{ include "frontcache.fullname" . }}-otel-collector:4317"
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ .Values.minio.rootUser | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ .Values.minio.rootPassword | quote }}
+            - name: AWS_ENDPOINT
+              value: "http://{{ include "frontcache.fullname" . }}-minio:9000"
+            - name: AWS_ALLOW_HTTP
+              value: "true"
+            - name: AWS_REGION
+              value: "us-east-1"
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          volumeMounts:
+            - name: bucket-config
+              mountPath: /etc/frontcache
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      volumes:
+        - name: bucket-config
+          configMap:
+            name: {{ include "frontcache.fullname" . }}-bucket-config

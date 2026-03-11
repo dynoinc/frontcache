@@ -4,7 +4,6 @@ pub mod disk;
 pub mod index;
 pub mod limiter;
 pub mod server;
-pub mod store;
 
 pub(crate) fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     match std::env::var(name) {

@@ -4,13 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-frontcache-proto = { path = "../proto" }
+frontcache-store = { path = "../store" }
 frontcache-metrics = { path = "../metrics" }
+axum = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
-tonic = { workspace = true }
 futures-util = { workspace = true }
-prost = { workspace = true }
 anyhow = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }
@@ -23,7 +21,6 @@ redb = { workspace = true }
 short-uuid = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-object_store = { workspace = true }
 clap = { workspace = true }
 tikv-jemallocator = { workspace = true }
 serde = { workspace = true }
@@ -31,4 +28,4 @@ serde_json = { workspace = true }
 tokio-util = { workspace = true }
 governor = { workspace = true }
 opentelemetry = { workspace = true }
-tonic-health = { workspace = true }
+http = { workspace = true }

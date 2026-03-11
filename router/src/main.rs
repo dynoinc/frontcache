@@ -2,6 +2,7 @@
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -12,6 +13,7 @@ use frontcache_router::{
     ring::{Node, Straw2Router},
     server::RouterServer,
 };
+use frontcache_store::{BucketConfig, Store};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
@@ -33,6 +35,9 @@ struct Args {
 
     #[arg(long, default_value_t = 16 * 1024 * 1024)]
     block_size: u64,
+
+    #[arg(long, help = "Path to bucket config YAML file")]
+    bucket_config: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -41,6 +46,9 @@ async fn main() -> Result<()> {
     frontcache_metrics::init();
 
     let args = Args::parse();
+
+    let bucket_config = Arc::new(BucketConfig::load(args.bucket_config.as_deref())?);
+    let store = Arc::new(Store::new(bucket_config));
 
     let ring = Arc::new(Straw2Router::new());
 
@@ -68,7 +76,7 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!("Starting frontcache router on {}", args.listen);
-    RouterServer::new(ring, args.block_size)
+    RouterServer::new(ring, args.block_size, args.server_port, store)
         .serve(args.listen)
         .await?;
 

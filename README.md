@@ -1,11 +1,13 @@
 # FrontCache [![Check](https://github.com/dynoinc/frontcache/actions/workflows/check.yml/badge.svg)](https://github.com/dynoinc/frontcache/actions/workflows/check.yml)
 
-Distributed pull-through cache for object storage (S3/GCS).
+Distributed pull-through cache for object storage (S3/GCS) with an S3-compatible HTTP API.
 
 ## Features
 
+- S3-compatible HTTP API (GetObject, HeadObject, PutObject, DeleteObject, ListObjectsV2, multipart upload)
 - Block-based caching with configurable block size (default 16MB)
 - Straw2 hashing for distributed block ownership
+- Single-block reads redirected (307) to owning server; multi-block reads stitched by router
 - Kubernetes auto-discovery
 - Aligned direct I/O reads
 - OpenTelemetry metrics for observability
@@ -15,12 +17,37 @@ Distributed pull-through cache for object storage (S3/GCS).
 
 FrontCache runs as two binaries:
 
-- **frontcache-router** — stateless routing layer. Accepts `LookupOwner` RPCs and returns the server pod that owns a given block using straw2 hashing over 262,144 virtual partitions.
-- **frontcache-server** — data plane. Accepts `ReadRange` RPCs, fetches from object storage on cache miss, and serves from local disk on cache hit.
+- **frontcache-router** — S3-compatible gateway. Accepts standard HTTP requests (`GET`, `HEAD`, `PUT`, `DELETE`, `POST`) on `/<bucket>/<key>`. Cached reads (GET/HEAD) are routed to the server owning the block via straw2 hashing over 262,144 virtual partitions. Writes and listings pass through directly to the backend.
+- **frontcache-server** — data plane. Serves cached blocks via HTTP. Fetches from object storage on cache miss, serves from local disk on cache hit.
 
-Clients talk to the router to discover which server owns a block, then read directly from that server.
+Any S3-compatible client works out of the box — curl, boto3, AWS CLI, Spark, DuckDB, etc.
+
+### Supported Operations
+
+| Operation | HTTP | Router Behavior |
+|---|---|---|
+| GetObject | `GET /bucket/key` | Cached — 307 redirect (single block) or stitch (multi-block) |
+| GetObject + Range | `GET /bucket/key` + `Range` header | Cached — same as above |
+| HeadObject | `HEAD /bucket/key` | Cached — routes to server, returns headers |
+| ListObjectsV2 | `GET /bucket?list-type=2` | Pass-through to backend |
+| PutObject | `PUT /bucket/key` | Pass-through to backend |
+| DeleteObject | `DELETE /bucket/key` | Pass-through to backend |
+| CreateMultipartUpload | `POST /bucket/key?uploads` | Pass-through to backend |
+| UploadPart | `PUT /bucket/key?partNumber=N&uploadId=X` | Pass-through to backend |
+| CompleteMultipartUpload | `POST /bucket/key?uploadId=X` | Pass-through to backend |
 
 ## Configuration
+
+### Bucket Config
+
+A YAML file maps bucket names to storage providers. Both router and server accept `--bucket-config <path>`. If omitted, all buckets default to S3.
+
+```yaml
+default_provider: s3
+buckets:
+  my-gcs-bucket:
+    provider: gs
+```
 
 ### Router Flags (`frontcache-router`)
 
@@ -30,16 +57,18 @@ Clients talk to the router to discover which server owns a block, then read dire
 | `--label` | `` | Label selector for Kubernetes pod discovery |
 | `--server-port` | `8080` | Port that server pods listen on |
 | `--block-size` | `16777216` | Block size in bytes |
+| `--bucket-config` | (none) | Path to bucket config YAML |
 
 ### Server Flags (`frontcache-server`)
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--listen` | `0.0.0.0:8080` | Address to listen on |
-| `--cache-dirs` | `/tmp/frontcache:1GiB` | Cache directories with sizes (`path:size`, comma-separated for multiple) |
+| `--cache-dirs` | `/tmp/frontcache:1GiB` | Cache directories with sizes (`path:size`, comma-separated) |
 | `--index-path` | `/var/lib/frontcache/index.db` | Path to the block index database |
 | `--block-size` | `16777216` | Block size in bytes |
-| `--chunk-size` | `262144` | gRPC stream chunk size in bytes |
+| `--chunk-size` | `262144` | HTTP response chunk size in bytes |
+| `--bucket-config` | (none) | Path to bucket config YAML |
 
 ### Server Environment Variables
 
@@ -61,6 +90,25 @@ Metrics are exported via [OpenTelemetry](https://opentelemetry.io/docs/languages
 
 After each block download, the server checks disk usage. When a cache directory exceeds the high watermark (default 95%), a background task evicts least-recently-used blocks until usage drops to the low watermark (default 90%). LRU timestamps are persisted to a separate redb table and flushed every 60 seconds, so eviction order survives restarts.
 
+## Usage
+
+```bash
+# Read a range
+curl -H "Range: bytes=0-4095" http://router:8081/my-bucket/path/to/file.bin
+
+# Head request
+curl -I http://router:8081/my-bucket/path/to/file.bin
+
+# Upload a file
+curl -X PUT -T myfile.bin http://router:8081/my-bucket/path/to/file.bin
+
+# List objects
+curl "http://router:8081/my-bucket?list-type=2&prefix=path/"
+
+# Delete
+curl -X DELETE http://router:8081/my-bucket/path/to/file.bin
+```
+
 ## Kubernetes
 
 The router auto-discovers server pods by watching pods with a matching label selector (`--label`). The ServiceAccount needs RBAC permissions:
@@ -70,37 +118,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-```
-
-## Rust Client
-
-```rust
-use frontcache_client::{CacheClient, CacheClientBuilder};
-use futures::StreamExt;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Quick start with defaults
-    let client = CacheClient::new("http://router:8081").await?;
-
-    // Or configure via builder
-    let client = CacheClientBuilder::new("http://router:8081")
-        .block_size(16 * 1024 * 1024)
-        .build()
-        .await?;
-
-    // Streaming read (ordered, lazy)
-    let mut stream = client.stream_range("s3://bucket/file", 0..1024 * 1024, Some("v1")).await?;
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        // process bytes...
-    }
-
-    // Buffered read (concurrent, out-of-order assembly)
-    let data = client.read_range("s3://bucket/file", 0..1024 * 1024, Some("v1")).await?;
-
-    Ok(())
-}
 ```
 
 ## License

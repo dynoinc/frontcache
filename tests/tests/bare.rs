@@ -22,8 +22,8 @@ use frontcache_server::{
     disk::{Disk, start_flusher},
     index::Index,
     limiter::FetchLimiter,
-    store::Store,
 };
+use frontcache_store::{BucketConfig, Store};
 
 const BUCKET: &str = "test-bucket";
 const DATA_42_1K: &[u8] = &[42u8; 1024];
@@ -141,7 +141,7 @@ fn bare_cache() -> BareCache {
 
     let disk = Disk::new(cache_dir, 1024 * 1024 * 1024);
     let index = Arc::new(Index::open(tmp.path().join("index.db")).unwrap());
-    let store = Arc::new(Store::new());
+    let store = Arc::new(Store::new(test_config()));
     store.backends.insert(
         ("inmem".to_string(), BUCKET.to_string()),
         gated.clone() as Arc<dyn ObjectStore>,
@@ -163,8 +163,19 @@ fn bare_cache() -> BareCache {
     }
 }
 
+fn test_config() -> Arc<BucketConfig> {
+    let mut config = BucketConfig::default();
+    config.buckets.insert(
+        BUCKET.to_string(),
+        frontcache_store::config::BucketEntry {
+            provider: "inmem".to_string(),
+        },
+    );
+    Arc::new(config)
+}
+
 fn object_key(path: &str) -> String {
-    format!("inmem://{}/{}", BUCKET, path)
+    format!("/{}/{}", BUCKET, path)
 }
 
 async fn seed(store: &InMemory, path: &str, data: &[u8]) -> Result<()> {
@@ -288,7 +299,7 @@ async fn shutdown_stops_background_tasks() -> Result<()> {
 
     let disk = Disk::new(cache_dir, 1024 * 1024 * 1024);
     let index = Arc::new(Index::open(tmp.path().join("index.db"))?);
-    let store = Arc::new(Store::new());
+    let store = Arc::new(Store::new(test_config()));
     let cache = Arc::new(Cache::new(
         index,
         store,
