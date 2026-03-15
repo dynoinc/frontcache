@@ -24,7 +24,6 @@ futures-util = { workspace = true }
 xxhash-rust = { workspace = true }
 rayon = { workspace = true }
 dashmap = { workspace = true }
-quick-xml = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
 http = { workspace = true }
