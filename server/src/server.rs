@@ -86,14 +86,14 @@ fn parse_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
 fn cache_error_to_response(e: CacheError) -> Response {
     let msg = format!("{:?}", e);
     let status = match &e {
-        CacheError::StoreRead(store_err) => match store_err.as_ref() {
+        CacheError::StoreRead { source, .. } => match source.as_ref() {
             StoreError::InvalidKey(_)
             | StoreError::InvalidRange { .. }
             | StoreError::UnsupportedProvider(_) => StatusCode::BAD_REQUEST,
             StoreError::NotFound(_) => StatusCode::NOT_FOUND,
             StoreError::Backend(_) => StatusCode::BAD_GATEWAY,
         },
-        CacheError::Throttled => StatusCode::TOO_MANY_REQUESTS,
+        CacheError::Throttled { .. } => StatusCode::TOO_MANY_REQUESTS,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, msg).into_response()

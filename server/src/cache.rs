@@ -26,19 +26,38 @@ use crate::{
 
 #[derive(Error, Debug, Clone)]
 pub enum CacheError {
-    #[error("Failed to create block file")]
-    CreateFile(#[source] Arc<anyhow::Error>),
-    #[error("Failed to update index")]
-    IndexUpdate(#[source] Arc<IndexError>),
-    #[error("Failed to read from store")]
-    StoreRead(#[source] Arc<StoreError>),
-    #[error("Failed to read block from disk")]
-    ReadBlock(#[source] Arc<anyhow::Error>),
-
-    #[error("Download task aborted")]
-    DownloadAborted,
-    #[error("Request throttled by backend fetch limiter")]
-    Throttled,
+    #[error("{key}:{offset}: failed to create block file")]
+    CreateFile {
+        key: String,
+        offset: u64,
+        #[source]
+        source: Arc<anyhow::Error>,
+    },
+    #[error("{key}:{offset}: failed to update index")]
+    IndexUpdate {
+        key: String,
+        offset: u64,
+        #[source]
+        source: Arc<IndexError>,
+    },
+    #[error("{key}:{offset}: failed to read from store")]
+    StoreRead {
+        key: String,
+        offset: u64,
+        #[source]
+        source: Arc<StoreError>,
+    },
+    #[error("{key}:{offset}: failed to read block from disk")]
+    ReadBlock {
+        key: String,
+        offset: u64,
+        #[source]
+        source: Arc<anyhow::Error>,
+    },
+    #[error("{key}:{offset}: download task aborted")]
+    DownloadAborted { key: String, offset: u64 },
+    #[error("{key}:{offset}: request throttled by backend fetch limiter")]
+    Throttled { key: String, offset: u64 },
 }
 
 pub enum CacheHit {
@@ -307,12 +326,21 @@ impl Cache {
                     self.evict_block(&obj_key, &block);
                     Box::pin(self.get(object, offset)).await
                 }
-                Err(e) => Err(CacheError::ReadBlock(Arc::new(e))),
+                Err(e) => Err(CacheError::ReadBlock {
+                    key: object.to_string(),
+                    offset,
+                    source: Arc::new(e),
+                }),
             },
             Action::Wait(future) => {
                 let outcome = match future.await {
                     Ok(outcome) => outcome,
-                    Err(_) => return Err(CacheError::DownloadAborted),
+                    Err(_) => {
+                        return Err(CacheError::DownloadAborted {
+                            key: object.to_string(),
+                            offset,
+                        });
+                    }
                 };
 
                 let m = frontcache_metrics::get();
@@ -354,12 +382,15 @@ impl Cache {
                     let _ = tx.send(shared);
                 });
 
-                let outcome = rx.await.map_err(|_| CacheError::DownloadAborted)?;
+                let outcome = rx.await.map_err(|_| CacheError::DownloadAborted {
+                    key: object.to_string(),
+                    offset,
+                })?;
 
                 let m = frontcache_metrics::get();
                 let label = match outcome.as_ref() {
                     Ok(_) => "miss",
-                    Err(CacheError::Throttled) => "throttled",
+                    Err(CacheError::Throttled { .. }) => "throttled",
                     Err(_) => "error",
                 };
                 m.cache_duration.record(
@@ -401,32 +432,47 @@ impl Cache {
 
     async fn download_block(self: &Arc<Self>, obj_key: &ObjKey) -> Result<FreshHit, CacheError> {
         let (object, block_offset) = obj_key;
-        tracing::info!("Downloading block {}:{}", object, block_offset);
+        let key = object.clone();
+        let offset = *block_offset;
+        tracing::info!("Downloading block {}:{}", key, offset);
 
-        let _permit = self
-            .limiter
-            .acquire_concurrency()
-            .await
-            .map_err(|_| CacheError::Throttled)?;
+        let _permit =
+            self.limiter
+                .acquire_concurrency()
+                .await
+                .map_err(|_| CacheError::Throttled {
+                    key: key.clone(),
+                    offset,
+                })?;
         self.limiter
             .wait_for_request()
             .await
-            .map_err(|_| CacheError::Throttled)?;
+            .map_err(|_| CacheError::Throttled {
+                key: key.clone(),
+                offset,
+            })?;
 
         let disk = select_disk(&self.disks);
 
         let read_result = self
             .store
-            .read_range(object, *block_offset, self.block_size)
+            .read_range(object, offset, self.block_size)
             .await
-            .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
+            .map_err(|e| CacheError::StoreRead {
+                key: key.clone(),
+                offset,
+                source: Arc::new(e),
+            })?;
 
         let data = read_result.data.clone();
         let object_size = read_result.object_size;
         self.limiter
             .wait_for_bytes(data.len())
             .await
-            .map_err(|_| CacheError::Throttled)?;
+            .map_err(|_| CacheError::Throttled {
+                key: key.clone(),
+                offset,
+            })?;
         let version = read_result.version.clone();
 
         // Remove old block if present
@@ -444,9 +490,13 @@ impl Cache {
         let pending =
             PendingBlock::prepare(disk.path(), read_result.data, version.clone(), object_size)
                 .await
-                .map_err(|e| CacheError::CreateFile(Arc::new(e)))?;
+                .map_err(|e| CacheError::CreateFile {
+                    key: key.clone(),
+                    offset,
+                    source: Arc::new(e),
+                })?;
 
-        let block_key: BlockKey = (object.clone(), *block_offset);
+        let block_key: BlockKey = (object.clone(), offset);
         self.index
             .upsert([(
                 block_key.clone(),
@@ -457,7 +507,11 @@ impl Cache {
                     object_size,
                 },
             )])
-            .map_err(|e| CacheError::IndexUpdate(Arc::new(e)))?;
+            .map_err(|e| CacheError::IndexUpdate {
+                key: key.clone(),
+                offset,
+                source: Arc::new(e),
+            })?;
 
         let block = match pending.persist() {
             Ok(b) => b,
@@ -465,7 +519,11 @@ impl Cache {
                 if let Err(idx_err) = self.index.delete_many(std::slice::from_ref(&block_key)) {
                     tracing::error!("Failed to rollback index entry: {}", idx_err);
                 }
-                return Err(CacheError::CreateFile(Arc::new(e)));
+                return Err(CacheError::CreateFile {
+                    key,
+                    offset,
+                    source: Arc::new(e),
+                });
             }
         };
 
