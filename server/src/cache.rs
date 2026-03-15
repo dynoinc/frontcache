@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -34,8 +34,7 @@ pub enum CacheError {
     StoreRead(#[source] Arc<StoreError>),
     #[error("Failed to read block from disk")]
     ReadBlock(#[source] Arc<anyhow::Error>),
-    #[error("Version mismatch: upstream={upstream}, requested={requested}")]
-    VersionMismatch { upstream: String, requested: String },
+
     #[error("Download task aborted")]
     DownloadAborted,
     #[error("Request throttled by backend fetch limiter")]
@@ -89,17 +88,8 @@ struct FreshHit {
 type DownloadResult = Arc<Result<FreshHit, CacheError>>;
 
 struct Slot {
-    versions: BTreeMap<String, Arc<Block>>,
-    inflight: BTreeMap<Option<String>, Shared<oneshot::Receiver<DownloadResult>>>,
-}
-
-impl Slot {
-    fn new() -> Self {
-        Self {
-            versions: BTreeMap::new(),
-            inflight: BTreeMap::new(),
-        }
-    }
+    block: Option<Arc<Block>>,
+    inflight: Option<Shared<oneshot::Receiver<DownloadResult>>>,
 }
 
 type ObjKey = (String, u64);
@@ -120,7 +110,6 @@ enum Action {
     Download {
         tx: oneshot::Sender<DownloadResult>,
         rx: Shared<oneshot::Receiver<DownloadResult>>,
-        had_versions: bool,
     },
 }
 
@@ -180,8 +169,8 @@ impl Cache {
     pub fn block_count(&self) -> usize {
         self.states
             .iter()
-            .map(|entry| entry.value().versions.len())
-            .sum()
+            .filter(|entry| entry.value().block.is_some())
+            .count()
     }
 
     pub fn init_from_disk(&self) -> Result<()> {
@@ -222,13 +211,10 @@ impl Cache {
                 }
             }
 
-            let obj_key = (block_key.0, block_key.1);
-            let version = block_key.2;
-            self.states
-                .entry(obj_key)
-                .or_insert_with(Slot::new)
-                .versions
-                .insert(version, block);
+            self.states.entry(block_key).or_insert(Slot {
+                block: Some(block),
+                inflight: None,
+            });
         }
 
         if !cleanup_keys.is_empty() {
@@ -258,12 +244,7 @@ impl Cache {
         Ok(())
     }
 
-    pub async fn get(
-        self: &Arc<Self>,
-        object: &str,
-        offset: u64,
-        version: Option<&str>,
-    ) -> Result<CacheHit, CacheError> {
+    pub async fn get(self: &Arc<Self>, object: &str, offset: u64) -> Result<CacheHit, CacheError> {
         let start = Instant::now();
         let block_offset = (offset / self.block_size) * self.block_size;
         let obj_key: ObjKey = (object.to_string(), block_offset);
@@ -272,46 +253,27 @@ impl Cache {
             Entry::Occupied(mut entry) => {
                 let slot = entry.get_mut();
 
-                let block = match version {
-                    Some(v) => slot.versions.get(v).cloned(),
-                    None => slot.versions.values().next().cloned(),
-                };
-                if let Some(block) = block {
+                if let Some(block) = &slot.block {
                     block.record_access();
-                    self.mark_dirty(
-                        (obj_key.0.clone(), obj_key.1, block.version().to_string()),
-                        block.last_accessed(),
-                    );
-                    Action::Read(block)
+                    self.mark_dirty(obj_key.clone(), block.last_accessed());
+                    Action::Read(block.clone())
+                } else if let Some(shared) = &slot.inflight {
+                    Action::Wait(shared.clone())
                 } else {
-                    let inflight_key = version.map(|v| v.to_string());
-                    if let Some(shared) = slot.inflight.get(&inflight_key) {
-                        Action::Wait(shared.clone())
-                    } else {
-                        let (tx, rx) = oneshot::channel();
-                        let had_versions = !slot.versions.is_empty();
-                        let shared = rx.shared();
-                        slot.inflight.insert(inflight_key, shared.clone());
-                        Action::Download {
-                            tx,
-                            rx: shared,
-                            had_versions,
-                        }
-                    }
+                    let (tx, rx) = oneshot::channel();
+                    let shared = rx.shared();
+                    slot.inflight = Some(shared.clone());
+                    Action::Download { tx, rx: shared }
                 }
             }
             Entry::Vacant(entry) => {
                 let (tx, rx) = oneshot::channel();
-                let inflight_key = version.map(|v| v.to_string());
-                let mut slot = Slot::new();
                 let shared = rx.shared();
-                slot.inflight.insert(inflight_key, shared.clone());
-                entry.insert(slot);
-                Action::Download {
-                    tx,
-                    rx: shared,
-                    had_versions: false,
-                }
+                entry.insert(Slot {
+                    block: None,
+                    inflight: Some(shared.clone()),
+                });
+                Action::Download { tx, rx: shared }
             }
         };
 
@@ -342,8 +304,8 @@ impl Cache {
                         obj_key,
                         block.version()
                     );
-                    self.evict_version(&obj_key, block.version(), &block);
-                    Box::pin(self.get(object, offset, version)).await
+                    self.evict_block(&obj_key, &block);
+                    Box::pin(self.get(object, offset)).await
                 }
                 Err(e) => Err(CacheError::ReadBlock(Arc::new(e))),
             },
@@ -371,25 +333,18 @@ impl Cache {
                     Err(e) => Err(e.clone()),
                 }
             }
-            Action::Download {
-                tx,
-                rx,
-                had_versions,
-            } => {
+            Action::Download { tx, rx } => {
                 let cache = Arc::clone(self);
                 let obj_key_owned = obj_key.clone();
-                let version_owned = version.map(|v| v.to_string());
 
                 tokio::spawn(async move {
-                    let result = cache
-                        .download_block(&obj_key_owned, version_owned.as_deref(), had_versions)
-                        .await;
+                    let result = cache.download_block(&obj_key_owned).await;
 
                     if let Some(mut slot) = cache.states.get_mut(&obj_key_owned) {
-                        slot.inflight.remove(&version_owned);
+                        slot.inflight = None;
                     }
                     cache.states.remove_if(&obj_key_owned, |_, s| {
-                        s.versions.is_empty() && s.inflight.is_empty()
+                        s.block.is_none() && s.inflight.is_none()
                     });
 
                     let shared = Arc::new(match &result {
@@ -427,31 +382,24 @@ impl Cache {
         }
     }
 
-    fn evict_version(&self, obj_key: &ObjKey, version: &str, block: &Block) {
+    fn evict_block(&self, obj_key: &ObjKey, block: &Block) {
         for disk in &self.disks {
             if block.path().starts_with(disk.path()) {
                 disk.sub_used(block.block_size());
                 break;
             }
         }
-        let block_key: BlockKey = (obj_key.0.clone(), obj_key.1, version.to_string());
-        if let Err(e) = self.index.delete_many(std::slice::from_ref(&block_key)) {
-            tracing::error!("Failed to delete index entry for {:?}: {}", block_key, e);
+        if let Err(e) = self.index.delete_many(std::slice::from_ref(obj_key)) {
+            tracing::error!("Failed to delete index entry for {:?}: {}", obj_key, e);
         }
         if let Some(mut slot) = self.states.get_mut(obj_key) {
-            slot.versions.remove(version);
+            slot.block = None;
         }
-        self.states.remove_if(obj_key, |_, s| {
-            s.versions.is_empty() && s.inflight.is_empty()
-        });
+        self.states
+            .remove_if(obj_key, |_, s| s.block.is_none() && s.inflight.is_none());
     }
 
-    async fn download_block(
-        self: &Arc<Self>,
-        obj_key: &ObjKey,
-        requested_version: Option<&str>,
-        had_versions: bool,
-    ) -> Result<FreshHit, CacheError> {
+    async fn download_block(self: &Arc<Self>, obj_key: &ObjKey) -> Result<FreshHit, CacheError> {
         let (object, block_offset) = obj_key;
         tracing::info!("Downloading block {}:{}", object, block_offset);
 
@@ -464,22 +412,6 @@ impl Cache {
             .wait_for_request()
             .await
             .map_err(|_| CacheError::Throttled)?;
-
-        // HEAD check: only when we have cached versions but not the requested one.
-        // Cold misses skip HEAD — high chance the requested version is the current one.
-        if had_versions && let Some(requested) = requested_version {
-            let upstream_ver = self
-                .store
-                .head(object)
-                .await
-                .map_err(|e| CacheError::StoreRead(Arc::new(e)))?;
-            if upstream_ver != requested {
-                return Err(CacheError::VersionMismatch {
-                    upstream: upstream_ver,
-                    requested: requested.to_string(),
-                });
-            }
-        }
 
         let disk = select_disk(&self.disks);
 
@@ -497,12 +429,24 @@ impl Cache {
             .map_err(|_| CacheError::Throttled)?;
         let version = read_result.version.clone();
 
+        // Remove old block if present
+        let old_block = self.states.get(obj_key).and_then(|slot| slot.block.clone());
+        if let Some(old) = &old_block {
+            for d in &self.disks {
+                if old.path().starts_with(d.path()) {
+                    d.sub_used(old.block_size());
+                    break;
+                }
+            }
+            let _ = std::fs::remove_file(old.path());
+        }
+
         let pending =
             PendingBlock::prepare(disk.path(), read_result.data, version.clone(), object_size)
                 .await
                 .map_err(|e| CacheError::CreateFile(Arc::new(e)))?;
 
-        let block_key: BlockKey = (object.clone(), *block_offset, version.clone());
+        let block_key: BlockKey = (object.clone(), *block_offset);
         self.index
             .upsert([(
                 block_key.clone(),
@@ -545,21 +489,12 @@ impl Cache {
         let block = Arc::new(block);
         let block_size = block.block_size();
         if let Some(mut slot) = self.states.get_mut(obj_key) {
-            slot.versions.insert(version.clone(), block);
+            slot.block = Some(block);
         }
 
         let m = frontcache_metrics::get();
         m.disk_byte_changes
             .add(block_size, &[KeyValue::new("action", "downloaded")]);
-
-        if let Some(requested) = requested_version
-            && version != requested
-        {
-            return Err(CacheError::VersionMismatch {
-                upstream: version,
-                requested: requested.to_string(),
-            });
-        }
 
         Ok(FreshHit {
             data,
@@ -570,23 +505,23 @@ impl Cache {
 
     pub async fn purge_bytes_from(&self, cache_dir: &Path, bytes_to_reclaim: u64) -> Result<()> {
         let start = std::time::Instant::now();
-        let mut candidates: Vec<(u64, BlockKey, PathBuf, u64)> = Vec::new();
+        let mut candidates: Vec<(u64, ObjKey, PathBuf, u64)> = Vec::new();
         for entry in self.states.iter() {
             let obj_key = entry.key();
-            for (version, block) in &entry.value().versions {
-                if block.path().starts_with(cache_dir) {
-                    candidates.push((
-                        block.last_accessed(),
-                        (obj_key.0.clone(), obj_key.1, version.clone()),
-                        block.path().to_path_buf(),
-                        block.block_size(),
-                    ));
-                }
+            if let Some(block) = &entry.value().block
+                && block.path().starts_with(cache_dir)
+            {
+                candidates.push((
+                    block.last_accessed(),
+                    obj_key.clone(),
+                    block.path().to_path_buf(),
+                    block.block_size(),
+                ));
             }
         }
         candidates.sort_unstable_by_key(|c| c.0);
 
-        let mut victims: Vec<(u64, BlockKey, PathBuf, u64)> = Vec::new();
+        let mut victims: Vec<(u64, ObjKey, PathBuf, u64)> = Vec::new();
         let mut total_bytes = 0u64;
         for c in candidates {
             if total_bytes >= bytes_to_reclaim {
@@ -613,13 +548,11 @@ impl Cache {
             };
 
             if gone {
-                let obj_key: ObjKey = (key.0.clone(), key.1);
-                if let Some(mut slot) = self.states.get_mut(&obj_key) {
-                    slot.versions.remove(&key.2);
+                if let Some(mut slot) = self.states.get_mut(key) {
+                    slot.block = None;
                 }
-                self.states.remove_if(&obj_key, |_, s| {
-                    s.versions.is_empty() && s.inflight.is_empty()
-                });
+                self.states
+                    .remove_if(key, |_, s| s.block.is_none() && s.inflight.is_none());
                 for disk in &self.disks {
                     if path.starts_with(disk.path()) {
                         disk.sub_used(*size);

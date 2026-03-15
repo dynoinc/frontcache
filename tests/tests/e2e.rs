@@ -120,15 +120,11 @@ async fn read_all(
     key: &str,
     start: u64,
     end: u64,
-    version: Option<&str>,
 ) -> Result<Vec<u8>> {
     let url = format!("{}{}", base_url, key);
-    let mut req = client
+    let req = client
         .get(&url)
         .header("Range", format!("bytes={}-{}", start, end - 1));
-    if let Some(v) = version {
-        req = req.header("If-Match", format!("\"{}\"", v));
-    }
     let resp = req.send().await?;
     let status = resp.status();
     if status == reqwest::StatusCode::TEMPORARY_REDIRECT {
@@ -139,12 +135,9 @@ async fn read_all(
             .unwrap()
             .to_str()?
             .to_string();
-        let mut req = client
+        let req = client
             .get(&location)
             .header("Range", format!("bytes={}-{}", start, end - 1));
-        if let Some(v) = version {
-            req = req.header("If-Match", format!("\"{}\"", v));
-        }
         let resp = req.send().await?;
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             anyhow::bail!(
@@ -184,7 +177,6 @@ async fn basic_read() -> Result<()> {
         &object_key("test/file.dat"),
         0,
         1024,
-        None,
     )
     .await?;
     assert_eq!(got.as_slice(), DATA_42_1K);
@@ -200,14 +192,14 @@ async fn cache_hit() -> Result<()> {
     seed(&c.mock, path, &data).await?;
 
     // First read — cache miss
-    let got = read_all(&c.client, &c.base_url, &object_key(path), 0, 2048, None).await?;
+    let got = read_all(&c.client, &c.base_url, &object_key(path), 0, 2048).await?;
     assert_eq!(got, data);
 
     // Delete from mock store
     c.mock.delete(&ObjPath::from(path)).await?;
 
     // Second read — served from cache
-    let got = read_all(&c.client, &c.base_url, &object_key(path), 0, 2048, None).await?;
+    let got = read_all(&c.client, &c.base_url, &object_key(path), 0, 2048).await?;
     assert_eq!(got, data);
     Ok(())
 }
@@ -230,7 +222,7 @@ async fn range_read_fuzz() -> Result<()> {
             let end = rng.u64(start + 1..=last_block_end);
             let expected_end = end.min(obj_size as u64) as usize;
 
-            let got = read_all(&c.client, &c.base_url, &key, start, end, None).await?;
+            let got = read_all(&c.client, &c.base_url, &key, start, end).await?;
             assert_eq!(
                 got,
                 &data[start as usize..expected_end],
@@ -251,7 +243,6 @@ async fn not_found() -> Result<()> {
         &object_key("test/missing.dat"),
         0,
         1024,
-        None,
     )
     .await;
     assert!(result.is_err());
@@ -268,80 +259,36 @@ async fn multi_block() -> Result<()> {
     let data: Vec<u8> = (0..=255u8).cycle().take(size).collect();
     seed(&c.mock, path, &data).await?;
 
-    let got = read_all(
-        &c.client,
-        &c.base_url,
-        &object_key(path),
-        0,
-        size as u64,
-        None,
-    )
-    .await?;
+    let got = read_all(&c.client, &c.base_url, &object_key(path), 0, size as u64).await?;
     assert_eq!(got.len(), size);
     assert_eq!(got, data);
     Ok(())
 }
 
 #[tokio::test]
-async fn version_mismatch() -> Result<()> {
+async fn overwrite_serves_cached_until_evicted() -> Result<()> {
     let c = start_cluster().await?;
-    let path = "test/versioned.dat";
-
-    seed(&c.mock, path, &[1u8; 1024]).await?;
-
-    // Request a version that won't match the upstream etag
-    let result = read_all(
-        &c.client,
-        &c.base_url,
-        &object_key(path),
-        0,
-        1024,
-        Some("wrong-version"),
-    )
-    .await;
-    assert!(result.is_err());
-    Ok(())
-}
-
-#[tokio::test]
-async fn multiversion() -> Result<()> {
-    let c = start_cluster().await?;
-    let path = "test/multi.dat";
+    let path = "test/overwrite.dat";
     let key = object_key(path);
     let obj_path = ObjPath::from(path);
 
-    // Put version A
+    // Put version A and cache it
     let data_a = vec![0xAA; 1024];
-    let put_a = c
-        .mock
+    c.mock
         .put(&obj_path, Bytes::from(data_a.clone()).into())
         .await?;
-    let ver_a = put_a.e_tag.unwrap().trim_matches('"').to_string();
-
-    // Read without version — caches block as ver_a
-    let got = read_all(&c.client, &c.base_url, &key, 0, 1024, None).await?;
+    let got = read_all(&c.client, &c.base_url, &key, 0, 1024).await?;
     assert_eq!(got, data_a);
 
-    // Overwrite with version B
+    // Overwrite with version B in backend
     let data_b = vec![0xBB; 1024];
-    let put_b = c
-        .mock
+    c.mock
         .put(&obj_path, Bytes::from(data_b.clone()).into())
         .await?;
-    let ver_b = put_b.e_tag.unwrap().trim_matches('"').to_string();
-    assert_ne!(ver_a, ver_b);
 
-    // Read ver_b — cache has ver_a but not ver_b, triggers download
-    let got = read_all(&c.client, &c.base_url, &key, 0, 1024, Some(&ver_b)).await?;
-    assert_eq!(got, data_b);
-
-    // Both versions now cached — read ver_a from cache
-    let got = read_all(&c.client, &c.base_url, &key, 0, 1024, Some(&ver_a)).await?;
+    // Cache still serves version A (no invalidation)
+    let got = read_all(&c.client, &c.base_url, &key, 0, 1024).await?;
     assert_eq!(got, data_a);
-
-    // Read ver_b again from cache
-    let got = read_all(&c.client, &c.base_url, &key, 0, 1024, Some(&ver_b)).await?;
-    assert_eq!(got, data_b);
 
     Ok(())
 }

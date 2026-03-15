@@ -93,7 +93,6 @@ fn cache_error_to_response(e: CacheError) -> Response {
             StoreError::NotFound(_) => StatusCode::NOT_FOUND,
             StoreError::Backend(_) => StatusCode::BAD_GATEWAY,
         },
-        CacheError::VersionMismatch { .. } => StatusCode::PRECONDITION_FAILED,
         CacheError::Throttled => StatusCode::TOO_MANY_REQUESTS,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -106,12 +105,7 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 
     let (offset, end) = parse_range(&headers).unwrap_or_default();
 
-    let version = headers
-        .get(header::IF_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string());
-
-    let hit = match state.cache.get(&key, offset, version.as_deref()).await {
+    let hit = match state.cache.get(&key, offset).await {
         Ok(hit) => hit,
         Err(e) => return cache_error_to_response(e),
     };
@@ -181,13 +175,7 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 async fn head_object(State(state): State<AppState>, req: Request) -> Response {
     let key = format!("/{}", req.uri().path().trim_start_matches('/'));
 
-    let version = req
-        .headers()
-        .get(header::IF_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string());
-
-    let hit = match state.cache.get(&key, 0, version.as_deref()).await {
+    let hit = match state.cache.get(&key, 0).await {
         Ok(hit) => hit,
         Err(e) => return cache_error_to_response(e),
     };

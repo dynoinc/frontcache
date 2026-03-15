@@ -200,8 +200,8 @@ async fn concurrent_reads_coalesce() -> Result<()> {
     let k1 = key.clone();
     let k2 = key.clone();
 
-    let t1 = tokio::spawn(async move { cache1.get(&k1, 0, None).await });
-    let t2 = tokio::spawn(async move { cache2.get(&k2, 0, None).await });
+    let t1 = tokio::spawn(async move { cache1.get(&k1, 0).await });
+    let t2 = tokio::spawn(async move { cache2.get(&k2, 0).await });
 
     // Wait for exactly one store call to enter
     bc.call_rx.recv().await.unwrap();
@@ -226,7 +226,7 @@ async fn abort_get_download_survives() -> Result<()> {
     let k1 = key.clone();
 
     // Start a get that will be aborted
-    let task = tokio::spawn(async move { cache1.get(&k1, 0, None).await });
+    let task = tokio::spawn(async move { cache1.get(&k1, 0).await });
 
     // Download task is at the gate
     bc.call_rx.recv().await.unwrap();
@@ -238,7 +238,7 @@ async fn abort_get_download_survives() -> Result<()> {
     bc.store.gate.wait().await;
 
     // Second get — succeeds via Wait (inflight) or Read (cached)
-    let hit = bc.cache.get(&key, 0, None).await;
+    let hit = bc.cache.get(&key, 0).await;
     assert!(hit.is_ok());
     assert_eq!(bc.store.get_count.load(Ordering::SeqCst), 1);
     Ok(())
@@ -255,8 +255,8 @@ async fn download_error_reaches_waiters() -> Result<()> {
     let k1 = key.clone();
     let k2 = key.clone();
 
-    let t1 = tokio::spawn(async move { cache1.get(&k1, 0, None).await });
-    let t2 = tokio::spawn(async move { cache2.get(&k2, 0, None).await });
+    let t1 = tokio::spawn(async move { cache1.get(&k1, 0).await });
+    let t2 = tokio::spawn(async move { cache2.get(&k2, 0).await });
 
     // One store call enters (the other caller coalesces)
     bc.call_rx.recv().await.unwrap();
@@ -279,7 +279,7 @@ async fn missing_keys_do_not_leak_slots() -> Result<()> {
     for i in 0..50 {
         let key = object_key(&format!("test/missing-{i}.dat"));
         let cache = bc.cache.clone();
-        let t = tokio::spawn(async move { cache.get(&key, 0, None).await });
+        let t = tokio::spawn(async move { cache.get(&key, 0).await });
         bc.call_rx.recv().await.unwrap();
         bc.store.gate.wait().await;
         assert!(t.await?.is_err());

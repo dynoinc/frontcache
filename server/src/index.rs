@@ -26,7 +26,7 @@ pub enum IndexError {
     Serialization(#[from] serde_json::Error),
 }
 
-pub type BlockKey = (String, u64, String);
+pub type BlockKey = (String, u64);
 
 const BLOCKS_TABLE: TableDefinition<BlockKey, &[u8]> = TableDefinition::new("blocks");
 const LAST_ACCESSED_TABLE: TableDefinition<BlockKey, u64> = TableDefinition::new("last_accessed");
@@ -66,9 +66,9 @@ impl Index {
         write_txn.set_durability(Durability::None)?;
         {
             let mut table = write_txn.open_table(BLOCKS_TABLE)?;
-            for ((object, offset, version), entry) in entries {
+            for ((object, offset), entry) in entries {
                 let value = serde_json::to_vec(&entry)?;
-                table.insert((object, offset, version), value.as_slice())?;
+                table.insert((object, offset), value.as_slice())?;
             }
         }
         write_txn.commit()?;
@@ -116,18 +116,14 @@ impl Index {
             for item in la_table.iter()? {
                 let (k, v) = item?;
                 let kv = k.value();
-                let key: BlockKey = (kv.0.to_string(), kv.1, kv.2.to_string());
+                let key: BlockKey = (kv.0.to_string(), kv.1);
                 last_accessed_map.insert(key, v.value());
             }
 
             let mut records = Vec::new();
             for item in blocks_table.iter()? {
                 let (bk, bv) = item?;
-                let block_key: BlockKey = (
-                    bk.value().0.to_string(),
-                    bk.value().1,
-                    bk.value().2.to_string(),
-                );
+                let block_key: BlockKey = (bk.value().0.to_string(), bk.value().1);
                 let entry: BlockEntry = serde_json::from_slice(bv.value())?;
                 let last_accessed = last_accessed_map.remove(&block_key);
                 records.push((

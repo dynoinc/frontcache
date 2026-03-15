@@ -156,15 +156,10 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 
     let (offset, end) = parse_range(&headers).unwrap_or_default();
 
-    let if_match = headers
-        .get(header::IF_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string());
-
     // For open-ended ranges, HEAD the first block's owner to learn object_size
     let end = match end {
         Some(e) => e,
-        None => match head_to_server(&state, &key, &if_match).await {
+        None => match head_to_server(&state, &key).await {
             Ok((object_size, _etag)) => {
                 if offset >= object_size {
                     return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
@@ -216,7 +211,6 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let client = state.http_client.clone();
     let ring = state.ring.clone();
     let server_port = state.server_port;
-    let if_match_clone = if_match.clone();
     let key_clone = key.clone();
 
     let body_stream = stream::iter(reads)
@@ -224,7 +218,6 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
             let client = client.clone();
             let ring = ring.clone();
             let key = key_clone.clone();
-            let if_match = if_match_clone.clone();
             async move {
                 let addrs = ring
                     .get_owners(&key, block_offset)
@@ -235,12 +228,9 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
                 for addr in &addrs {
                     let ip = addr.split(':').next().unwrap_or(addr);
                     let url = format!("http://{}:{}{}", ip, server_port, key);
-                    let mut req = client
+                    let req = client
                         .get(&url)
                         .header("Range", format!("bytes={}-{}", read_offset, read_end));
-                    if let Some(v) = &if_match {
-                        req = req.header("If-Match", format!("\"{}\"", v));
-                    }
                     match req.send().await {
                         Ok(resp)
                             if resp.status().is_success()
@@ -276,11 +266,7 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 }
 
 /// HEAD the server owning block 0 to learn object_size and ETag.
-async fn head_to_server(
-    state: &AppState,
-    key: &str,
-    if_match: &Option<String>,
-) -> Result<(u64, String), Response> {
+async fn head_to_server(state: &AppState, key: &str) -> Result<(u64, String), Response> {
     let addrs = state
         .ring
         .get_owners(key, 0)
@@ -289,11 +275,7 @@ async fn head_to_server(
     for addr in &addrs {
         let ip = addr.split(':').next().unwrap_or(addr);
         let url = format!("http://{}:{}{}", ip, state.server_port, key);
-        let mut req = state.http_client.head(&url);
-        if let Some(v) = &if_match {
-            req = req.header("If-Match", format!("\"{}\"", v));
-        }
-        match req.send().await {
+        match state.http_client.head(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
                 let size = resp
                     .headers()
@@ -324,13 +306,7 @@ async fn head_to_server(
 
 async fn head_object(State(state): State<AppState>, req: Request) -> Response {
     let key = format!("/{}", req.uri().path().trim_start_matches('/'));
-    let if_match = req
-        .headers()
-        .get(header::IF_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string());
-
-    match head_to_server(&state, &key, &if_match).await {
+    match head_to_server(&state, &key).await {
         Ok((size, etag)) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_LENGTH, size.to_string())
