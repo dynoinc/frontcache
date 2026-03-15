@@ -438,7 +438,7 @@ impl Cache {
                     break;
                 }
             }
-            let _ = std::fs::remove_file(old.path());
+            let _ = tokio::fs::remove_file(old.path()).await;
         }
 
         let pending =
