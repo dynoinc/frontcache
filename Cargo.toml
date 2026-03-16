@@ -56,6 +56,9 @@ governor = "0.10"
 tower = "0.5"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 http = "1.4"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
 
 [profile.release]
 opt-level = 3

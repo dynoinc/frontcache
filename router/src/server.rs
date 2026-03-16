@@ -12,6 +12,9 @@ use axum::{
 use dashmap::DashMap;
 use futures_util::future::Either;
 use futures_util::{StreamExt, stream};
+use http_body_util::BodyExt;
+use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::rt::TokioExecutor;
 use object_store::MultipartUpload;
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -21,12 +24,14 @@ use frontcache_store::Store;
 
 const PREFETCH_BLOCKS: usize = 16;
 
+type HttpClient = HyperClient<hyper_util::client::legacy::connect::HttpConnector, Body>;
+
 #[derive(Clone)]
 struct AppState {
     ring: Arc<Straw2Router>,
     block_size: u64,
     server_port: u16,
-    http_client: reqwest::Client,
+    http_client: HttpClient,
     store: Arc<Store>,
     uploads: Arc<DashMap<String, Mutex<Box<dyn MultipartUpload>>>>,
 }
@@ -59,7 +64,11 @@ impl RouterServer {
             ring: self.ring,
             block_size: self.block_size,
             server_port: self.server_port,
-            http_client: reqwest::Client::new(),
+            http_client: {
+                let mut connector = hyper_util::client::legacy::connect::HttpConnector::new();
+                connector.set_nodelay(true);
+                HyperClient::builder(TokioExecutor::new()).build(connector)
+            },
             store: self.store,
             uploads: Arc::new(DashMap::new()),
         };
@@ -221,16 +230,12 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
         })
         .buffered(PREFETCH_BLOCKS)
         .map(|result| match result {
-            Ok(chunk_stream) => {
-                Either::Left(chunk_stream.map(|r| r.map_err(std::io::Error::other)))
-            }
+            Ok(chunk_stream) => Either::Left(chunk_stream),
             Err(e) => Either::Right(stream::once(async move { Err(std::io::Error::other(e)) })),
         })
         .flatten();
 
-    let body_stream = first_stream
-        .map(|r| r.map_err(std::io::Error::other))
-        .chain(rest_stream);
+    let body_stream = first_stream.chain(rest_stream);
 
     let status = if range.is_some() {
         StatusCode::PARTIAL_CONTENT
@@ -256,9 +261,36 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     builder.body(Body::from_stream(body_stream)).unwrap()
 }
 
+/// Build a GET request with Range header to a server pod.
+fn build_block_request(ip: &str, server_port: u16, key: &str, range: &str) -> http::Request<Body> {
+    let uri = format!("http://{}:{}{}", ip, server_port, key);
+    http::Request::builder()
+        .uri(uri)
+        .header("Range", range)
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// Send a block fetch request, returning the response on success.
+async fn try_fetch(
+    client: &HttpClient,
+    ip: &str,
+    server_port: u16,
+    key: &str,
+    range: &str,
+) -> Result<http::Response<hyper::body::Incoming>, anyhow::Error> {
+    let req = build_block_request(ip, server_port, key, range);
+    let resp = client.request(req).await?;
+    if resp.status().is_success() || resp.status() == StatusCode::PARTIAL_CONTENT {
+        Ok(resp)
+    } else {
+        anyhow::bail!("server {} returned {}", ip, resp.status())
+    }
+}
+
 /// Fetch a block and extract object_size + etag from the server's Content-Range / ETag headers.
 async fn fetch_block_with_meta(
-    client: reqwest::Client,
+    client: HttpClient,
     ring: Arc<Straw2Router>,
     server_port: u16,
     key: String,
@@ -267,7 +299,7 @@ async fn fetch_block_with_meta(
     (
         u64,
         String,
-        impl futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>,
+        impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>,
     ),
     anyhow::Error,
 > {
@@ -275,86 +307,61 @@ async fn fetch_block_with_meta(
         .get_owners(&key, block_offset)
         .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
 
-    let read_end = read_offset + read_len - 1;
+    let range = format!("bytes={}-{}", read_offset, read_offset + read_len - 1);
     let mut last_err = None;
     for addr in &addrs {
         let ip = addr.split(':').next().unwrap_or(addr);
-        let url = format!("http://{}:{}{}", ip, server_port, key);
-        let req = client
-            .get(&url)
-            .header("Range", format!("bytes={}-{}", read_offset, read_end));
-        match req.send().await {
-            Ok(resp)
-                if resp.status().is_success()
-                    || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT =>
-            {
+        match try_fetch(&client, ip, server_port, &key, &range).await {
+            Ok(resp) => {
                 let object_size = parse_content_range_total(resp.headers()).unwrap_or(0);
                 let etag = resp
                     .headers()
-                    .get(reqwest::header::ETAG)
+                    .get(header::ETAG)
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
                     .trim_matches('"')
                     .to_string();
-                return Ok((object_size, etag, resp.bytes_stream()));
+                let body_stream = resp
+                    .into_body()
+                    .into_data_stream()
+                    .map(|r| r.map_err(std::io::Error::other));
+                return Ok((object_size, etag, body_stream));
             }
-            Ok(resp) => {
-                last_err = Some(anyhow::anyhow!(
-                    "server {} returned {}",
-                    addr,
-                    resp.status()
-                ));
-            }
-            Err(e) => {
-                last_err = Some(e.into());
-            }
+            Err(e) => last_err = Some(e),
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
 }
 
 /// Parse the total size from a Content-Range header: "bytes 0-4095/52428800"
-fn parse_content_range_total(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-    let val = headers.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
+fn parse_content_range_total(headers: &http::HeaderMap) -> Option<u64> {
+    let val = headers.get(header::CONTENT_RANGE)?.to_str().ok()?;
     val.rsplit_once('/')?.1.parse().ok()
 }
 
 async fn fetch_block(
-    client: reqwest::Client,
+    client: HttpClient,
     ring: Arc<Straw2Router>,
     server_port: u16,
     key: String,
     (block_offset, read_offset, read_len): (u64, u64, u64),
-) -> Result<impl futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>, anyhow::Error> {
+) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>, anyhow::Error> {
     let addrs = ring
         .get_owners(&key, block_offset)
         .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
 
-    let read_end = read_offset + read_len - 1; // inclusive for HTTP Range
+    let range = format!("bytes={}-{}", read_offset, read_offset + read_len - 1);
     let mut last_err = None;
     for addr in &addrs {
         let ip = addr.split(':').next().unwrap_or(addr);
-        let url = format!("http://{}:{}{}", ip, server_port, key);
-        let req = client
-            .get(&url)
-            .header("Range", format!("bytes={}-{}", read_offset, read_end));
-        match req.send().await {
-            Ok(resp)
-                if resp.status().is_success()
-                    || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT =>
-            {
-                return Ok(resp.bytes_stream());
-            }
+        match try_fetch(&client, ip, server_port, &key, &range).await {
             Ok(resp) => {
-                last_err = Some(anyhow::anyhow!(
-                    "server {} returned {}",
-                    addr,
-                    resp.status()
-                ));
+                return Ok(resp
+                    .into_body()
+                    .into_data_stream()
+                    .map(|r| r.map_err(std::io::Error::other)));
             }
-            Err(e) => {
-                last_err = Some(e.into());
-            }
+            Err(e) => last_err = Some(e),
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
