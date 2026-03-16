@@ -117,7 +117,8 @@ impl Store {
         }
     }
 
-    pub async fn head(&self, key: &str) -> Result<String, StoreError> {
+    /// Returns (object_size, etag).
+    pub async fn head(&self, key: &str) -> Result<(u64, String), StoreError> {
         let start = Instant::now();
         let (provider, bucket, path) = self.parse_key(key)?;
         let backend = self.get_backend(&provider, &bucket).await?;
@@ -142,7 +143,8 @@ impl Store {
             ],
         );
 
-        Ok(Self::extract_e_tag(&result?))
+        let r = result?;
+        Ok((r.meta.size as u64, Self::extract_e_tag(&r)))
     }
 
     fn extract_e_tag(result: &object_store::GetResult) -> String {

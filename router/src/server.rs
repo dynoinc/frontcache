@@ -153,23 +153,38 @@ async fn get_or_list(
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let key = format!("/{}", req.uri().path().trim_start_matches('/'));
     let headers = req.headers().clone();
+    let range = parse_range(&headers);
+    let (offset, requested_end) = range.unwrap_or_default();
 
-    let (offset, end) = parse_range(&headers).unwrap_or_default();
+    let bs = state.block_size;
+    // Start with an optimistic read list; we'll clamp after learning object_size.
+    let preliminary_end = requested_end.unwrap_or(offset + bs);
+    let reads = block_reads(offset, preliminary_end, bs);
+    let mut reads_iter = reads.into_iter();
+    let first = reads_iter.next().unwrap();
 
-    // For open-ended ranges, HEAD the first block's owner to learn object_size
-    let end = match end {
-        Some(e) => e,
-        None => match head_to_server(&state, &key).await {
-            Ok((object_size, _etag)) => {
-                if offset >= object_size {
-                    return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
-                }
-                object_size
-            }
-            Err(resp) => return resp,
-        },
+    // Preflight: fetch the first block. The server response tells us
+    // object_size and etag via Content-Range / ETag headers, avoiding
+    // a separate HEAD round-trip.
+    let (object_size, etag, first_stream) = match fetch_block_with_meta(
+        state.http_client.clone(),
+        state.ring.clone(),
+        state.server_port,
+        key.clone(),
+        first,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
 
+    if offset >= object_size {
+        return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+    }
+
+    // Now clamp end to actual object_size and recompute remaining reads.
+    let end = requested_end.map_or(object_size, |e| e.min(object_size));
     if end <= offset {
         return (
             StatusCode::OK,
@@ -179,31 +194,16 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
             .into_response();
     }
 
-    let bs = state.block_size;
-    let reads = block_reads(offset, end, bs);
-    // Preflight: fetch the first block before committing to 206, so we can
-    // return a proper HTTP error (e.g. 503) if all servers are unreachable.
-    let mut reads_iter = reads.into_iter();
-    let first = reads_iter.next().unwrap(); // reads is non-empty (end > offset)
-    let first_stream = match fetch_block(
-        state.http_client.clone(),
-        state.ring.clone(),
-        state.server_port,
-        key.clone(),
-        first,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-    };
+    let content_len = end - offset;
+    // Recompute full read list with clamped end, skip the first block we already fetched.
+    let remaining_reads: Vec<_> = block_reads(offset, end, bs).into_iter().skip(1).collect();
 
     let client = state.http_client.clone();
     let ring = state.ring.clone();
     let server_port = state.server_port;
     let key_clone = key.clone();
 
-    let rest_stream = stream::iter(reads_iter)
+    let rest_stream = stream::iter(remaining_reads)
         .map(move |(block_offset, read_offset, read_len)| {
             let client = client.clone();
             let ring = ring.clone();
@@ -232,16 +232,91 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
         .map(|r| r.map_err(std::io::Error::other))
         .chain(rest_stream);
 
-    Response::builder()
-        .status(StatusCode::PARTIAL_CONTENT)
+    let status = if range.is_some() {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+
+    let mut builder = Response::builder()
+        .status(status)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(
+        .header(header::CONTENT_LENGTH, content_len.to_string())
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::ETAG, format!("\"{}\"", etag))
+        .header(frontcache_metrics::OP_HEADER, "GetObject");
+
+    if range.is_some() {
+        builder = builder.header(
             header::CONTENT_RANGE,
-            format!("bytes {}-{}/*", offset, end - 1),
-        )
-        .header(frontcache_metrics::OP_HEADER, "GetObject")
-        .body(Body::from_stream(body_stream))
-        .unwrap()
+            format!("bytes {}-{}/{}", offset, end - 1, object_size),
+        );
+    }
+
+    builder.body(Body::from_stream(body_stream)).unwrap()
+}
+
+/// Fetch a block and extract object_size + etag from the server's Content-Range / ETag headers.
+async fn fetch_block_with_meta(
+    client: reqwest::Client,
+    ring: Arc<Straw2Router>,
+    server_port: u16,
+    key: String,
+    (block_offset, read_offset, read_len): (u64, u64, u64),
+) -> Result<
+    (
+        u64,
+        String,
+        impl futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>,
+    ),
+    anyhow::Error,
+> {
+    let addrs = ring
+        .get_owners(&key, block_offset)
+        .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
+
+    let read_end = read_offset + read_len - 1;
+    let mut last_err = None;
+    for addr in &addrs {
+        let ip = addr.split(':').next().unwrap_or(addr);
+        let url = format!("http://{}:{}{}", ip, server_port, key);
+        let req = client
+            .get(&url)
+            .header("Range", format!("bytes={}-{}", read_offset, read_end));
+        match req.send().await {
+            Ok(resp)
+                if resp.status().is_success()
+                    || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT =>
+            {
+                let object_size = parse_content_range_total(resp.headers()).unwrap_or(0);
+                let etag = resp
+                    .headers()
+                    .get(reqwest::header::ETAG)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .trim_matches('"')
+                    .to_string();
+                return Ok((object_size, etag, resp.bytes_stream()));
+            }
+            Ok(resp) => {
+                last_err = Some(anyhow::anyhow!(
+                    "server {} returned {}",
+                    addr,
+                    resp.status()
+                ));
+            }
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
+}
+
+/// Parse the total size from a Content-Range header: "bytes 0-4095/52428800"
+fn parse_content_range_total(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let val = headers.get(reqwest::header::CONTENT_RANGE)?.to_str().ok()?;
+    val.rsplit_once('/')?.1.parse().ok()
 }
 
 async fn fetch_block(
@@ -285,57 +360,25 @@ async fn fetch_block(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
 }
 
-/// HEAD the server owning block 0 to learn object_size and ETag.
-async fn head_to_server(state: &AppState, key: &str) -> Result<(u64, String), Response> {
-    let addrs = state
-        .ring
-        .get_owners(key, 0)
-        .ok_or_else(|| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
-
-    for addr in &addrs {
-        let ip = addr.split(':').next().unwrap_or(addr);
-        let url = format!("http://{}:{}{}", ip, state.server_port, key);
-        match state.http_client.head(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let size = resp
-                    .headers()
-                    .get(header::CONTENT_LENGTH)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let etag = resp
-                    .headers()
-                    .get(header::ETAG)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .trim_matches('"')
-                    .to_string();
-                return Ok((size, etag));
-            }
-            Ok(resp) => {
-                let status = StatusCode::from_u16(resp.status().as_u16())
-                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                let body = resp.text().await.unwrap_or_default();
-                return Err((status, body).into_response());
-            }
-            Err(_) => continue,
-        }
-    }
-    Err(StatusCode::SERVICE_UNAVAILABLE.into_response())
-}
-
 async fn head_object(State(state): State<AppState>, req: Request) -> Response {
     let key = format!("/{}", req.uri().path().trim_start_matches('/'));
-    match head_to_server(&state, &key).await {
+    match state.store.head(&key).await {
         Ok((size, etag)) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_LENGTH, size.to_string())
+            .header(header::CONTENT_TYPE, "application/octet-stream")
             .header(header::ETAG, format!("\"{}\"", etag))
             .header(header::ACCEPT_RANGES, "bytes")
             .header(frontcache_metrics::OP_HEADER, "HeadObject")
             .body(Body::empty())
             .unwrap(),
-        Err(resp) => resp,
+        Err(e) => {
+            let status = match &e {
+                frontcache_store::StoreError::NotFound(_) => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, format!("{e}")).into_response()
+        }
     }
 }
 

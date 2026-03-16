@@ -38,7 +38,7 @@ impl CacheServer {
         };
         Router::new()
             .route("/healthz", get(healthz))
-            .route("/{*key}", get(get_object).head(head_object))
+            .route("/{*key}", get(get_object))
             .layer(frontcache_metrics::layer())
             .with_state(state)
     }
@@ -169,23 +169,5 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
         .header(header::ETAG, format!("\"{}\"", etag))
         .header(frontcache_metrics::OP_HEADER, "GetObject")
         .body(body)
-        .unwrap()
-}
-
-async fn head_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
-
-    let hit = match state.cache.get(&key, 0).await {
-        Ok(hit) => hit,
-        Err(e) => return cache_error_to_response(e),
-    };
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_LENGTH, hit.object_size().to_string())
-        .header(header::ETAG, format!("\"{}\"", hit.e_tag()))
-        .header(header::ACCEPT_RANGES, "bytes")
-        .header(frontcache_metrics::OP_HEADER, "HeadObject")
-        .body(Body::empty())
         .unwrap()
 }
