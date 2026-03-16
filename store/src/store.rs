@@ -144,7 +144,7 @@ impl Store {
         );
 
         let r = result?;
-        Ok((r.meta.size as u64, Self::extract_e_tag(&r)))
+        Ok((r.meta.size, Self::extract_e_tag(&r)))
     }
 
     fn extract_e_tag(result: &object_store::GetResult) -> String {
