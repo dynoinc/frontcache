@@ -28,3 +28,4 @@ uuid = { workspace = true }
 serde = { workspace = true }
 http = { workspace = true }
 object_store = { workspace = true }
+rustls = { workspace = true }

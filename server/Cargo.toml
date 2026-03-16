@@ -29,3 +29,4 @@ tokio-util = { workspace = true }
 governor = { workspace = true }
 opentelemetry = { workspace = true }
 http = { workspace = true }
+rustls = { workspace = true }

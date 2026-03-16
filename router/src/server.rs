@@ -6,11 +6,11 @@ use axum::{
     body::Body,
     extract::{Query, Request, State},
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::get,
 };
-use bytes::Bytes;
 use dashmap::DashMap;
+use futures_util::future::Either;
 use futures_util::{StreamExt, stream};
 use object_store::MultipartUpload;
 use serde::Deserialize;
@@ -181,88 +181,108 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 
     let bs = state.block_size;
     let reads = block_reads(offset, end, bs);
+    // Preflight: fetch the first block before committing to 206, so we can
+    // return a proper HTTP error (e.g. 503) if all servers are unreachable.
+    let mut reads_iter = reads.into_iter();
+    let first = reads_iter.next().unwrap(); // reads is non-empty (end > offset)
+    let first_stream = match fetch_block(
+        state.http_client.clone(),
+        state.ring.clone(),
+        state.server_port,
+        key.clone(),
+        first,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
 
-    // Single block → 307 redirect
-    if reads.len() == 1 {
-        let (block_offset, _, _) = reads[0];
-        if let Some(addrs) = state.ring.get_owners(&key, block_offset)
-            && let Some(addr) = addrs.first()
-        {
-            let location = format!(
-                "http://{}:{}{}",
-                addr.split(':').next().unwrap_or(addr),
-                state.server_port,
-                key
-            );
-            let mut resp = Redirect::temporary(&location).into_response();
-            if let Some(range) = headers.get(header::RANGE) {
-                resp.headers_mut().insert(header::RANGE, range.clone());
-            }
-            resp.headers_mut().insert(
-                http::HeaderName::from_static(frontcache_metrics::OP_HEADER),
-                "GetObject".parse().unwrap(),
-            );
-            return resp;
-        }
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-
-    // Multi-block → stitch
     let client = state.http_client.clone();
     let ring = state.ring.clone();
     let server_port = state.server_port;
     let key_clone = key.clone();
 
-    let body_stream = stream::iter(reads)
+    let rest_stream = stream::iter(reads_iter)
         .map(move |(block_offset, read_offset, read_len)| {
             let client = client.clone();
             let ring = ring.clone();
             let key = key_clone.clone();
             async move {
-                let addrs = ring
-                    .get_owners(&key, block_offset)
-                    .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
-
-                let read_end = read_offset + read_len - 1; // inclusive for HTTP Range
-                let mut last_err = None;
-                for addr in &addrs {
-                    let ip = addr.split(':').next().unwrap_or(addr);
-                    let url = format!("http://{}:{}{}", ip, server_port, key);
-                    let req = client
-                        .get(&url)
-                        .header("Range", format!("bytes={}-{}", read_offset, read_end));
-                    match req.send().await {
-                        Ok(resp)
-                            if resp.status().is_success()
-                                || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT =>
-                        {
-                            let data = resp.bytes().await?;
-                            return Ok::<Bytes, anyhow::Error>(data);
-                        }
-                        Ok(resp) => {
-                            last_err = Some(anyhow::anyhow!(
-                                "server {} returned {}",
-                                addr,
-                                resp.status()
-                            ));
-                        }
-                        Err(e) => {
-                            last_err = Some(e.into());
-                        }
-                    }
-                }
-                Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
+                fetch_block(
+                    client,
+                    ring,
+                    server_port,
+                    key,
+                    (block_offset, read_offset, read_len),
+                )
+                .await
             }
         })
         .buffered(PREFETCH_BLOCKS)
-        .map(|result| result.map_err(std::io::Error::other));
+        .map(|result| match result {
+            Ok(chunk_stream) => {
+                Either::Left(chunk_stream.map(|r| r.map_err(std::io::Error::other)))
+            }
+            Err(e) => Either::Right(stream::once(async move { Err(std::io::Error::other(e)) })),
+        })
+        .flatten();
+
+    let body_stream = first_stream
+        .map(|r| r.map_err(std::io::Error::other))
+        .chain(rest_stream);
 
     Response::builder()
         .status(StatusCode::PARTIAL_CONTENT)
         .header(header::ACCEPT_RANGES, "bytes")
+        .header(
+            header::CONTENT_RANGE,
+            format!("bytes {}-{}/*", offset, end - 1),
+        )
         .header(frontcache_metrics::OP_HEADER, "GetObject")
         .body(Body::from_stream(body_stream))
         .unwrap()
+}
+
+async fn fetch_block(
+    client: reqwest::Client,
+    ring: Arc<Straw2Router>,
+    server_port: u16,
+    key: String,
+    (block_offset, read_offset, read_len): (u64, u64, u64),
+) -> Result<impl futures_util::Stream<Item = reqwest::Result<bytes::Bytes>>, anyhow::Error> {
+    let addrs = ring
+        .get_owners(&key, block_offset)
+        .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
+
+    let read_end = read_offset + read_len - 1; // inclusive for HTTP Range
+    let mut last_err = None;
+    for addr in &addrs {
+        let ip = addr.split(':').next().unwrap_or(addr);
+        let url = format!("http://{}:{}{}", ip, server_port, key);
+        let req = client
+            .get(&url)
+            .header("Range", format!("bytes={}-{}", read_offset, read_end));
+        match req.send().await {
+            Ok(resp)
+                if resp.status().is_success()
+                    || resp.status() == reqwest::StatusCode::PARTIAL_CONTENT =>
+            {
+                return Ok(resp.bytes_stream());
+            }
+            Ok(resp) => {
+                last_err = Some(anyhow::anyhow!(
+                    "server {} returned {}",
+                    addr,
+                    resp.status()
+                ));
+            }
+            Err(e) => {
+                last_err = Some(e.into());
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
 }
 
 /// HEAD the server owning block 0 to learn object_size and ETag.

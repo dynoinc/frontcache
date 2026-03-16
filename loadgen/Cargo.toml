@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 frontcache-metrics = { path = "../metrics" }
-reqwest = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 fastrand = { workspace = true }

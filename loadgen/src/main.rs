@@ -1,4 +1,8 @@
 use anyhow::Result;
+use aws_sdk_s3::Client;
+use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
+use aws_sdk_s3::primitives::ByteStream;
+use bytes::Bytes;
 use clap::Parser;
 use std::time::Duration;
 
@@ -32,47 +36,56 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let file_size = (args.file_size_mb * 1024 * 1024) as usize;
     let sleep_dur = Duration::from_millis(args.sleep_ms);
-    let files: Vec<String> = (1..=args.file_count)
-        .map(|i| format!("/{}/file{i}.bin", args.bucket))
+
+    let creds = Credentials::new("minioadmin", "minioadmin", None, None, "static");
+    let config = aws_sdk_s3::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .endpoint_url(&args.router)
+        .region(Region::new("us-east-1"))
+        .credentials_provider(creds)
+        .force_path_style(true)
+        .build();
+    let client = Client::from_conf(config);
+
+    let keys: Vec<String> = (1..=args.file_count)
+        .map(|i| format!("file{i}.bin"))
         .collect();
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()?;
-
-    tracing::info!(router = %args.router, "Waiting for router...");
-    loop {
-        match client.get(format!("{}/healthz", args.router)).send().await {
-            Ok(r) if r.status().is_success() => break,
-            _ => tokio::time::sleep(Duration::from_secs(2)).await,
+    tracing::info!(router = %args.router, files = keys.len(), file_size, "Seeding files via router");
+    for key in &keys {
+        let data = Bytes::from(random_bytes(file_size));
+        loop {
+            match client
+                .put_object()
+                .bucket(&args.bucket)
+                .key(key)
+                .body(ByteStream::from(data.clone()))
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!("Seeded {key}");
+                    break;
+                }
+                Err(e) => {
+                    tracing::info!("Waiting for router... ({e})");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
         }
-    }
-
-    tracing::info!(files = files.len(), file_size, "Seeding files via router");
-    for key in &files {
-        let url = format!("{}{}", args.router, key);
-        let data: Vec<u8> = (0..file_size).map(|_| fastrand::u8(..)).collect();
-        client
-            .put(&url)
-            .body(data)
-            .send()
-            .await?
-            .error_for_status()?;
-        tracing::info!("Seeded {}", key);
     }
     tracing::info!("Seeding complete, starting reads");
 
     let mut count = 0u64;
     loop {
-        let idx = fastrand::usize(..files.len());
-        let key = &files[idx];
+        let idx = fastrand::usize(..keys.len());
+        let key = &keys[idx];
 
-        // Mix of GET (range read) and HEAD requests
         let result = if fastrand::u8(..) < 200 {
             let offset = fastrand::u64(..(file_size as u64 / 4096)) * 4096;
-            read_range(&client, &args.router, key, offset).await
+            read_range(&client, &args.bucket, key, offset).await
         } else {
-            head_object(&client, &args.router, key).await
+            head_object(&client, &args.bucket, key).await
         };
 
         match result {
@@ -82,37 +95,31 @@ async fn main() -> Result<()> {
                     println!("Completed {count} reads");
                 }
             }
-            Err(e) => tracing::warn!("Error on {}: {}", key, e),
+            Err(e) => tracing::warn!("Error on {key}: {e}"),
         }
 
         tokio::time::sleep(sleep_dur).await;
     }
 }
 
-async fn read_range(
-    client: &reqwest::Client,
-    router: &str,
-    key: &str,
-    offset: u64,
-) -> Result<usize> {
-    let url = format!("{}{}", router, key);
+async fn read_range(client: &Client, bucket: &str, key: &str, offset: u64) -> Result<()> {
+    let range = format!("bytes={}-{}", offset, offset + 4095);
     let resp = client
-        .get(&url)
-        .header("Range", format!("bytes={}-{}", offset, offset + 4095))
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .range(range)
         .send()
-        .await?
-        .error_for_status()?;
-    Ok(resp.bytes().await?.len())
+        .await?;
+    resp.body.collect().await?;
+    Ok(())
 }
 
-async fn head_object(client: &reqwest::Client, router: &str, key: &str) -> Result<usize> {
-    let url = format!("{}{}", router, key);
-    let resp = client.head(&url).send().await?.error_for_status()?;
-    let size = resp
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0);
-    Ok(size)
+async fn head_object(client: &Client, bucket: &str, key: &str) -> Result<()> {
+    client.head_object().bucket(bucket).key(key).send().await?;
+    Ok(())
+}
+
+fn random_bytes(n: usize) -> Vec<u8> {
+    (0..n).map(|_| fastrand::u8(..)).collect()
 }
