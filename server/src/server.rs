@@ -115,7 +115,7 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let offset_in_block = (offset - block_offset) as usize;
     let block_len = hit.block_size() as usize;
     let object_size = hit.object_size();
-    let etag = hit.version().to_string();
+    let etag = hit.e_tag().to_string();
 
     if offset_in_block >= block_len {
         return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
@@ -183,7 +183,7 @@ async fn head_object(State(state): State<AppState>, req: Request) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_LENGTH, hit.object_size().to_string())
-        .header(header::ETAG, format!("\"{}\"", hit.version()))
+        .header(header::ETAG, format!("\"{}\"", hit.e_tag()))
         .header(header::ACCEPT_RANGES, "bytes")
         .header(frontcache_metrics::OP_HEADER, "HeadObject")
         .body(Body::empty())

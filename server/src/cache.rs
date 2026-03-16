@@ -65,12 +65,12 @@ pub enum CacheHit {
         reader: BlockReader,
         block_size: u64,
         object_size: u64,
-        version: String,
+        e_tag: String,
     },
     Fresh {
         data: Bytes,
         object_size: u64,
-        version: String,
+        e_tag: String,
     },
 }
 
@@ -89,10 +89,10 @@ impl CacheHit {
         }
     }
 
-    pub fn version(&self) -> &str {
+    pub fn e_tag(&self) -> &str {
         match self {
-            CacheHit::Disk { version, .. } => version,
-            CacheHit::Fresh { version, .. } => version,
+            CacheHit::Disk { e_tag, .. } => e_tag,
+            CacheHit::Fresh { e_tag, .. } => e_tag,
         }
     }
 }
@@ -101,7 +101,7 @@ impl CacheHit {
 struct FreshHit {
     data: Bytes,
     object_size: u64,
-    version: String,
+    e_tag: String,
 }
 
 type DownloadResult = Arc<Result<FreshHit, CacheError>>;
@@ -217,7 +217,7 @@ impl Cache {
             let last_accessed = record.last_accessed.unwrap_or_else(Block::now);
             let block = Arc::new(Block::new(
                 block_path.clone(),
-                record.entry.version.clone(),
+                record.entry.e_tag.clone(),
                 record.entry.block_size,
                 record.entry.object_size,
                 last_accessed,
@@ -311,7 +311,7 @@ impl Cache {
                         reader,
                         block_size: block.block_size(),
                         object_size: block.object_size(),
-                        version: block.version().to_string(),
+                        e_tag: block.e_tag().to_string(),
                     })
                 }
                 Err(e)
@@ -319,9 +319,9 @@ impl Cache {
                         .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
                 {
                     tracing::warn!(
-                        "Block file missing for {:?} version={}, re-downloading",
+                        "Block file missing for {:?} e_tag={}, re-downloading",
                         obj_key,
-                        block.version()
+                        block.e_tag()
                     );
                     self.evict_block(&obj_key, &block);
                     Box::pin(self.get(object, offset)).await
@@ -356,7 +356,7 @@ impl Cache {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
                         object_size: fresh.object_size,
-                        version: fresh.version.clone(),
+                        e_tag: fresh.e_tag.clone(),
                     }),
                     Err(e) => Err(e.clone()),
                 }
@@ -405,7 +405,7 @@ impl Cache {
                     Ok(fresh) => Ok(CacheHit::Fresh {
                         data: fresh.data.clone(),
                         object_size: fresh.object_size,
-                        version: fresh.version.clone(),
+                        e_tag: fresh.e_tag.clone(),
                     }),
                     Err(e) => Err(e.clone()),
                 }
@@ -473,7 +473,7 @@ impl Cache {
                 key: key.clone(),
                 offset,
             })?;
-        let version = read_result.version.clone();
+        let e_tag = read_result.e_tag.clone();
 
         // Remove old block if present
         let old_block = self.states.get(obj_key).and_then(|slot| slot.block.clone());
@@ -488,7 +488,7 @@ impl Cache {
         }
 
         let pending =
-            PendingBlock::prepare(disk.path(), read_result.data, version.clone(), object_size)
+            PendingBlock::prepare(disk.path(), read_result.data, e_tag.clone(), object_size)
                 .await
                 .map_err(|e| CacheError::CreateFile {
                     key: key.clone(),
@@ -502,7 +502,7 @@ impl Cache {
                 block_key.clone(),
                 BlockEntry {
                     path: pending.path().to_string_lossy().to_string(),
-                    version: version.clone(),
+                    e_tag: e_tag.clone(),
                     block_size: pending.block_size(),
                     object_size,
                 },
@@ -557,7 +557,7 @@ impl Cache {
         Ok(FreshHit {
             data,
             object_size,
-            version,
+            e_tag,
         })
     }
 

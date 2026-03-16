@@ -55,7 +55,7 @@ unsafe impl Sync for AlignedBuf {}
 pub struct PendingBlock {
     tmp: tempfile::NamedTempFile,
     path: PathBuf,
-    version: String,
+    e_tag: String,
     block_size: u64,
     object_size: u64,
 }
@@ -64,7 +64,7 @@ impl PendingBlock {
     pub async fn prepare(
         cache_dir: &Path,
         data: Bytes,
-        version: String,
+        e_tag: String,
         object_size: u64,
     ) -> Result<Self> {
         let id = ShortUuid::generate().to_string();
@@ -90,7 +90,7 @@ impl PendingBlock {
         Ok(Self {
             tmp,
             path,
-            version,
+            e_tag,
             block_size,
             object_size,
         })
@@ -108,7 +108,7 @@ impl PendingBlock {
         self.tmp.persist(&self.path)?;
         Ok(Block::new(
             self.path,
-            self.version,
+            self.e_tag,
             self.block_size,
             self.object_size,
             Block::now(),
@@ -118,7 +118,7 @@ impl PendingBlock {
 
 pub struct Block {
     path: PathBuf,
-    version: String,
+    e_tag: String,
     block_size: u64,
     object_size: u64,
     last_accessed: AtomicU64,
@@ -127,14 +127,14 @@ pub struct Block {
 impl Block {
     pub fn new(
         path: PathBuf,
-        version: String,
+        e_tag: String,
         block_size: u64,
         object_size: u64,
         last_accessed: u64,
     ) -> Self {
         Self {
             path,
-            version,
+            e_tag,
             block_size,
             object_size,
             last_accessed: AtomicU64::new(last_accessed),
@@ -152,8 +152,8 @@ impl Block {
         &self.path
     }
 
-    pub fn version(&self) -> &str {
-        &self.version
+    pub fn e_tag(&self) -> &str {
+        &self.e_tag
     }
 
     pub fn block_size(&self) -> u64 {

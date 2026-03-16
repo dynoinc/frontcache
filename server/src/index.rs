@@ -34,7 +34,7 @@ const LAST_ACCESSED_TABLE: TableDefinition<BlockKey, u64> = TableDefinition::new
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockEntry {
     pub path: String,
-    pub version: String,
+    pub e_tag: String,
     pub block_size: u64,
     pub object_size: u64,
 }

@@ -39,7 +39,7 @@ impl StoreError {
 
 pub struct ReadResult {
     pub data: Bytes,
-    pub version: String,
+    pub e_tag: String,
     pub object_size: u64,
 }
 
@@ -142,10 +142,10 @@ impl Store {
             ],
         );
 
-        Ok(Self::extract_version(&result?))
+        Ok(Self::extract_e_tag(&result?))
     }
 
-    fn extract_version(result: &object_store::GetResult) -> String {
+    fn extract_e_tag(result: &object_store::GetResult) -> String {
         result
             .meta
             .e_tag
@@ -188,7 +188,7 @@ impl Store {
         );
 
         let get_result = result?;
-        let version = Self::extract_version(&get_result);
+        let e_tag = Self::extract_e_tag(&get_result);
         let object_size = get_result.meta.size;
 
         let data = get_result
@@ -203,7 +203,7 @@ impl Store {
 
         Ok(ReadResult {
             data,
-            version,
+            e_tag,
             object_size,
         })
     }
