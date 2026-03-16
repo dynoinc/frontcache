@@ -280,143 +280,16 @@ data:
         },
         {
           "type": "row",
-          "title": "Client Metrics",
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
-          "id": 1,
-          "panels": []
-        },
-        {
-          "title": "RPC Request Rate",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
-          "id": 2,
-          "datasource": { "type": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "custom": {
-                "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-                "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "barWidthFactor": 0.6,
-                "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
-                "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-                "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-                "pointSize": 5, "scaleDistribution": { "type": "linear" },
-                "showPoints": "auto", "showValues": false, "spanNulls": false,
-                "stacking": { "group": "A", "mode": "none" },
-                "thresholdsStyle": { "mode": "off" }
-              },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 80 }] },
-              "unit": "reqps"
-            },
-            "overrides": []
-          },
-          "options": {
-            "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-            "tooltip": { "hideZeros": false, "mode": "single", "sort": "none" }
-          },
-          "pluginVersion": "12.3.3",
-          "targets": [
-            {
-              "editorMode": "code",
-              "expr": "sum(rate(http_duration_ms_count{exported_job=\"frontcache_client\"}[5m])) by (operation, http_status)",
-              "legendFormat": "{{`{{operation}}`}} / {{`{{http_status}}`}}",
-              "range": true,
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "title": "RPC Latency p50 by Method",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
-          "id": 3,
-          "datasource": { "type": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "custom": {
-                "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-                "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "barWidthFactor": 0.6,
-                "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
-                "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-                "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-                "pointSize": 5, "scaleDistribution": { "type": "linear" },
-                "showPoints": "auto", "showValues": false, "spanNulls": false,
-                "stacking": { "group": "A", "mode": "none" },
-                "thresholdsStyle": { "mode": "off" }
-              },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 80 }] },
-              "unit": "ms"
-            },
-            "overrides": []
-          },
-          "options": {
-            "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-            "tooltip": { "hideZeros": false, "mode": "single", "sort": "none" }
-          },
-          "pluginVersion": "12.3.3",
-          "targets": [
-            {
-              "expr": "histogram_quantile(0.50, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, operation))",
-              "legendFormat": "{{`{{operation}}`}}",
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "title": "RPC Latency p99 by Method",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
-          "id": 4,
-          "datasource": { "type": "prometheus" },
-          "fieldConfig": {
-            "defaults": {
-              "color": { "mode": "palette-classic" },
-              "custom": {
-                "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
-                "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "barWidthFactor": 0.6,
-                "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
-                "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-                "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1,
-                "pointSize": 5, "scaleDistribution": { "type": "linear" },
-                "showPoints": "auto", "showValues": false, "spanNulls": false,
-                "stacking": { "group": "A", "mode": "none" },
-                "thresholdsStyle": { "mode": "off" }
-              },
-              "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 80 }] },
-              "unit": "ms"
-            },
-            "overrides": []
-          },
-          "options": {
-            "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-            "tooltip": { "hideZeros": false, "mode": "single", "sort": "none" }
-          },
-          "pluginVersion": "12.3.3",
-          "targets": [
-            {
-              "expr": "histogram_quantile(0.99, sum(rate(http_duration_ms_bucket{exported_job=\"frontcache_client\"}[5m])) by (le, operation))",
-              "legendFormat": "{{`{{operation}}`}}",
-              "refId": "A"
-            }
-          ]
-        },
-        {
-          "type": "row",
           "title": "Router Metrics",
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
           "id": 5,
           "panels": []
         },
         {
-          "title": "LookupOwner Request Rate",
+          "title": "Router GetObject QPS",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 15 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 6 },
           "id": 8,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -455,9 +328,9 @@ data:
           ]
         },
         {
-          "title": "LookupOwner Latency p50",
+          "title": "Router GetObject p50",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 15 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 6 },
           "id": 6,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -494,9 +367,9 @@ data:
           ]
         },
         {
-          "title": "LookupOwner Latency p99",
+          "title": "Router GetObject p99",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 15 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 6 },
           "id": 7,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -535,7 +408,7 @@ data:
         {
           "title": "Ring Members",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
           "id": 9,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -574,7 +447,7 @@ data:
         {
           "title": "Ring Member Changes",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
           "id": 10,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -614,14 +487,14 @@ data:
           "type": "row",
           "title": "Server Metrics",
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
           "id": 11,
           "panels": []
         },
         {
           "title": "ReadRange Request Rate",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 23 },
           "id": 14,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -662,7 +535,7 @@ data:
         {
           "title": "ReadRange Latency p50",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 23 },
           "id": 12,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -701,7 +574,7 @@ data:
         {
           "title": "ReadRange Latency p99",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 23 },
           "id": 13,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -740,7 +613,7 @@ data:
         {
           "title": "Cache Hit/Miss Rate",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 40 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 31 },
           "id": 22,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -779,7 +652,7 @@ data:
         {
           "title": "Cache Latency p50",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 31 },
           "id": 15,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -818,7 +691,7 @@ data:
         {
           "title": "Cache Latency p99",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 31 },
           "id": 16,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -857,7 +730,7 @@ data:
         {
           "title": "Background Duration",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 48 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 39 },
           "id": 23,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -911,7 +784,7 @@ data:
         {
           "title": "Disk Byte Changes",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 48 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 39 },
           "id": 24,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -950,7 +823,7 @@ data:
         {
           "title": "Disk Usage %",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 48 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 39 },
           "id": 20,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -999,14 +872,14 @@ data:
           "type": "row",
           "title": "Store Metrics",
           "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 47 },
           "id": 21,
           "panels": []
         },
         {
           "title": "Store Request Rate",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 57 },
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 48 },
           "id": 19,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -1045,7 +918,7 @@ data:
         {
           "title": "Store Latency p50",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 57 },
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 48 },
           "id": 17,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
@@ -1084,7 +957,7 @@ data:
         {
           "title": "Store Latency p99",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 57 },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 48 },
           "id": 18,
           "datasource": { "type": "prometheus" },
           "fieldConfig": {
