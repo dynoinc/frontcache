@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
+    serve::ListenerExt,
 };
 use opentelemetry::KeyValue;
 
@@ -47,9 +48,16 @@ impl CacheServer {
         let app = self.into_router();
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!("Server listening on {}", addr);
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+        axum::serve(
+            listener.tap_io(|tcp| {
+                if let Err(e) = tcp.set_nodelay(true) {
+                    tracing::warn!("failed to set TCP_NODELAY: {e}");
+                }
+            }),
+            app,
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
         Ok(())
     }
 }
