@@ -397,31 +397,34 @@ async fn list_objects(state: AppState, bucket: &str, params: ListParams) -> Resp
     let prefix = params.prefix.as_deref();
     match state.store.list(bucket, prefix).await {
         Ok(result) => {
+            use std::fmt::Write;
             let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
             xml.push_str("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
-            xml.push_str(&format!("<Name>{}</Name>", bucket));
+            let _ = write!(xml, "<Name>{}</Name>", bucket);
             if let Some(p) = prefix {
-                xml.push_str(&format!("<Prefix>{}</Prefix>", p));
+                let _ = write!(xml, "<Prefix>{}</Prefix>", p);
             }
             xml.push_str("<IsTruncated>false</IsTruncated>");
             for obj in &result.objects {
                 xml.push_str("<Contents>");
-                xml.push_str(&format!("<Key>{}</Key>", obj.location));
-                xml.push_str(&format!("<Size>{}</Size>", obj.size));
-                xml.push_str(&format!(
+                let _ = write!(xml, "<Key>{}</Key>", obj.location);
+                let _ = write!(xml, "<Size>{}</Size>", obj.size);
+                let _ = write!(
+                    xml,
                     "<LastModified>{}</LastModified>",
                     obj.last_modified.to_rfc3339()
-                ));
+                );
                 if let Some(ref etag) = obj.e_tag {
-                    xml.push_str(&format!("<ETag>{}</ETag>", etag));
+                    let _ = write!(xml, "<ETag>{}</ETag>", etag);
                 }
                 xml.push_str("</Contents>");
             }
             for prefix in &result.common_prefixes {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
                     prefix
-                ));
+                );
             }
             xml.push_str("</ListBucketResult>");
 
