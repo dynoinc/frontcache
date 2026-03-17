@@ -18,6 +18,18 @@ use hyper_util::rt::TokioExecutor;
 
 use crate::ring::Straw2Router;
 
+#[derive(Debug, thiserror::Error)]
+enum FetchError {
+    #[error("no nodes available")]
+    NoNodes,
+    #[error("server {0} returned {1}")]
+    ServerStatus(SocketAddr, StatusCode),
+    #[error("missing Content-Range header")]
+    MissingContentRange,
+    #[error("{0}")]
+    Http(#[from] hyper_util::client::legacy::Error),
+}
+
 const PREFETCH_BLOCKS: usize = 16;
 
 type HttpClient = HyperClient<hyper_util::client::legacy::connect::HttpConnector, Body>;
@@ -232,7 +244,7 @@ async fn try_fetch(
     addr: SocketAddr,
     key: &str,
     range: &str,
-) -> Result<http::Response<hyper::body::Incoming>, anyhow::Error> {
+) -> Result<http::Response<hyper::body::Incoming>, FetchError> {
     let uri = format!("http://{}{}", addr, key);
     let req = http::Request::builder()
         .uri(uri)
@@ -243,7 +255,7 @@ async fn try_fetch(
     if resp.status().is_success() || resp.status() == StatusCode::PARTIAL_CONTENT {
         Ok(resp)
     } else {
-        anyhow::bail!("server {} returned {}", addr, resp.status())
+        Err(FetchError::ServerStatus(addr, resp.status()))
     }
 }
 
@@ -252,10 +264,10 @@ async fn fetch_raw_block(
     ring: &Straw2Router,
     key: &str,
     (block_offset, read_offset, read_len): (u64, u64, u64),
-) -> Result<http::Response<hyper::body::Incoming>, anyhow::Error> {
+) -> Result<http::Response<hyper::body::Incoming>, FetchError> {
     let addrs = ring
         .get_owners(key, block_offset)
-        .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
+        .ok_or(FetchError::NoNodes)?;
 
     let range = format!("bytes={}-{}", read_offset, read_offset + read_len - 1);
     let mut last_err = None;
@@ -265,7 +277,7 @@ async fn fetch_raw_block(
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
+    Err(last_err.unwrap_or(FetchError::NoNodes))
 }
 
 fn into_byte_stream(
@@ -294,11 +306,11 @@ async fn fetch_block_with_meta(
         String,
         impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>,
     ),
-    anyhow::Error,
+    FetchError,
 > {
     let resp = fetch_raw_block(&client, &ring, &key, block).await?;
-    let object_size = parse_content_range_total(resp.headers())
-        .ok_or_else(|| anyhow::anyhow!("server response missing Content-Range header"))?;
+    let object_size =
+        parse_content_range_total(resp.headers()).ok_or(FetchError::MissingContentRange)?;
     let etag = resp
         .headers()
         .get(header::ETAG)
@@ -314,7 +326,7 @@ async fn fetch_block(
     ring: Arc<Straw2Router>,
     key: String,
     block: (u64, u64, u64),
-) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>, anyhow::Error> {
+) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>, FetchError> {
     let resp = fetch_raw_block(&client, &ring, &key, block).await?;
     Ok(into_byte_stream(resp))
 }
