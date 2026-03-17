@@ -12,9 +12,22 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
 use bytes::Bytes;
 use short_uuid::ShortUuid;
+
+#[derive(Debug, thiserror::Error)]
+pub enum BlockError {
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+    #[error("alloc failed: {0}")]
+    Layout(#[from] std::alloc::LayoutError),
+    #[error("persist failed: {0}")]
+    Persist(#[from] tempfile::PersistError),
+    #[error("spawn failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
+    #[error("{0}")]
+    Other(String),
+}
 
 const ALIGN: usize = 4096;
 
@@ -24,11 +37,14 @@ struct AlignedBuf {
 }
 
 impl AlignedBuf {
-    fn new(len: usize) -> Result<Self> {
-        anyhow::ensure!(len > 0, "zero-size AlignedBuf");
+    fn new(len: usize) -> Result<Self, BlockError> {
+        if len == 0 {
+            return Err(BlockError::Other("zero-size AlignedBuf".into()));
+        }
         let layout = Layout::from_size_align(len, ALIGN)?;
         let ptr = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(ptr).ok_or_else(|| anyhow::anyhow!("aligned alloc failed"))?;
+        let ptr =
+            NonNull::new(ptr).ok_or_else(|| BlockError::Other("aligned alloc failed".into()))?;
         Ok(Self { ptr, layout })
     }
 
@@ -66,7 +82,7 @@ impl PendingBlock {
         data: Bytes,
         e_tag: String,
         object_size: u64,
-    ) -> Result<Self> {
+    ) -> Result<Self, BlockError> {
         let id = ShortUuid::generate().to_string();
         let prefix = &id[..2];
         let filename = format!("{}.blk", id);
@@ -78,14 +94,15 @@ impl PendingBlock {
         let block_size = data.len() as u64;
         let path = final_dir.join(&filename);
 
-        let tmp = tokio::task::spawn_blocking(move || -> Result<tempfile::NamedTempFile> {
-            let mut file = tmp;
-            file.as_file().set_len(block_size)?;
-            file.write_all(&data)?;
-            file.as_file().sync_all()?;
-            Ok(file)
-        })
-        .await??;
+        let tmp =
+            tokio::task::spawn_blocking(move || -> Result<tempfile::NamedTempFile, BlockError> {
+                let mut file = tmp;
+                file.as_file().set_len(block_size)?;
+                file.write_all(&data)?;
+                file.as_file().sync_all()?;
+                Ok(file)
+            })
+            .await??;
 
         Ok(Self {
             tmp,
@@ -104,7 +121,7 @@ impl PendingBlock {
         self.block_size
     }
 
-    pub fn persist(self) -> Result<Block> {
+    pub fn persist(self) -> Result<Block, BlockError> {
         self.tmp.persist(&self.path)?;
         Ok(Block::new(
             self.path,
@@ -141,7 +158,7 @@ impl Block {
         }
     }
 
-    pub fn open_reader(&self) -> Result<BlockReader> {
+    pub fn open_reader(&self) -> Result<BlockReader, BlockError> {
         let file = open_direct(&self.path)?;
         Ok(BlockReader {
             file: Arc::new(file),
@@ -185,7 +202,7 @@ pub struct BlockReader {
 }
 
 impl BlockReader {
-    pub async fn read_chunk(&self, offset: u64, len: usize) -> Result<Bytes> {
+    pub async fn read_chunk(&self, offset: u64, len: usize) -> Result<Bytes, BlockError> {
         if len == 0 {
             return Ok(Bytes::new());
         }
@@ -208,7 +225,7 @@ impl BlockReader {
     }
 }
 
-fn open_direct(path: &Path) -> Result<File> {
+fn open_direct(path: &Path) -> Result<File, BlockError> {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::OpenOptionsExt;

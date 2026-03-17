@@ -93,17 +93,28 @@ fn extract_key(req: &Request) -> String {
     format!("/{}", req.uri().path().trim_start_matches('/'))
 }
 
-fn parse_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
-    let range = headers.get(header::RANGE)?.to_str().ok()?;
-    let range = range.strip_prefix("bytes=")?;
-    let (start, end) = range.split_once('-')?;
-    let start: u64 = start.parse().ok()?;
-    let end = if end.is_empty() {
-        None
-    } else {
-        Some(end.parse::<u64>().ok()? + 1)
+/// Parse a Range header into (start, exclusive_end).
+/// Returns `None` if no Range header is present.
+/// Returns `Some(None)` if the header is malformed.
+fn parse_range(headers: &HeaderMap) -> Option<Option<(u64, Option<u64>)>> {
+    let range = headers.get(header::RANGE)?;
+    let parse = || {
+        let range = range.to_str().ok()?;
+        let range = range.strip_prefix("bytes=")?;
+        let (start, end) = range.split_once('-')?;
+        let start: u64 = start.parse().ok()?;
+        let end = if end.is_empty() {
+            None
+        } else {
+            let end = end.parse::<u64>().ok()?.checked_add(1)?;
+            if end <= start {
+                return None;
+            }
+            Some(end)
+        };
+        Some((start, end))
     };
-    Some((start, end))
+    Some(parse())
 }
 
 /// Compute block-aligned reads: Vec<(block_offset, read_offset, read_len)>
@@ -122,7 +133,13 @@ fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let key = extract_key(&req);
     let headers = req.headers().clone();
-    let range = parse_range(&headers);
+    let range = match parse_range(&headers) {
+        Some(Some(r)) => Some(r),
+        Some(None) => {
+            return (StatusCode::RANGE_NOT_SATISFIABLE, "malformed Range header").into_response();
+        }
+        None => None,
+    };
     let (offset, requested_end) = range.unwrap_or_default();
 
     let bs = state.block_size;

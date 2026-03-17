@@ -12,13 +12,12 @@ use tokio::sync::oneshot;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Result;
 use bytes::Bytes;
 
 use frontcache_store::{Store, StoreError};
 
 use crate::{
-    block::{Block, BlockReader, PendingBlock},
+    block::{Block, BlockError, BlockReader, PendingBlock},
     disk::{Disk, select_disk},
     index::{BlockEntry, BlockKey, Index, IndexError},
     limiter::FetchLimiter,
@@ -31,7 +30,7 @@ pub enum CacheError {
         key: String,
         offset: u64,
         #[source]
-        source: Arc<anyhow::Error>,
+        source: Arc<BlockError>,
     },
     #[error("{key}:{offset}: failed to update index")]
     IndexUpdate {
@@ -52,7 +51,7 @@ pub enum CacheError {
         key: String,
         offset: u64,
         #[source]
-        source: Arc<anyhow::Error>,
+        source: Arc<BlockError>,
     },
     #[error("{key}:{offset}: download task aborted")]
     DownloadAborted { key: String, offset: u64 },
@@ -193,7 +192,7 @@ impl Cache {
             .count()
     }
 
-    pub fn init_from_disk(&self) -> Result<()> {
+    pub fn init_from_disk(&self) -> std::io::Result<()> {
         let disk_paths: Vec<&Path> = self.disks.iter().map(|d| d.path()).collect();
         let existing: HashSet<PathBuf> = disk_paths
             .par_iter()
@@ -206,7 +205,7 @@ impl Cache {
         let mut cleanup_keys = Vec::new();
         let mut indexed_paths = HashSet::new();
 
-        for (block_key, record) in self.index.list_all()? {
+        for (block_key, record) in self.index.list_all().map_err(std::io::Error::other)? {
             let block_path = PathBuf::from(&record.entry.path);
             if !existing.contains(&block_path) {
                 cleanup_keys.push(block_key);
@@ -239,7 +238,9 @@ impl Cache {
 
         if !cleanup_keys.is_empty() {
             tracing::warn!("Cleaning up {} stale index entries", cleanup_keys.len());
-            self.index.delete_many(&cleanup_keys)?;
+            self.index
+                .delete_many(&cleanup_keys)
+                .map_err(std::io::Error::other)?;
         }
 
         let orphans: Vec<_> = existing.difference(&indexed_paths).collect();
@@ -315,10 +316,7 @@ impl Cache {
                         e_tag: block.e_tag().to_string(),
                     })
                 }
-                Err(e)
-                    if e.downcast_ref::<std::io::Error>()
-                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
-                {
+                Err(BlockError::Io(ref io)) if io.kind() == std::io::ErrorKind::NotFound => {
                     tracing::warn!(
                         "Block file missing for {:?} e_tag={}, re-downloading",
                         obj_key,
@@ -561,7 +559,11 @@ impl Cache {
         })
     }
 
-    pub async fn purge_bytes_from(&self, cache_dir: &Path, bytes_to_reclaim: u64) -> Result<()> {
+    pub async fn purge_bytes_from(
+        &self,
+        cache_dir: &Path,
+        bytes_to_reclaim: u64,
+    ) -> std::io::Result<()> {
         let start = std::time::Instant::now();
         let mut candidates: Vec<(u64, ObjKey, PathBuf, u64)> = Vec::new();
         for entry in self.states.iter() {
@@ -626,7 +628,9 @@ impl Cache {
             return Ok(());
         }
 
-        self.index.delete_many(&deleted_keys)?;
+        self.index
+            .delete_many(&deleted_keys)
+            .map_err(std::io::Error::other)?;
 
         let m = frontcache_metrics::get();
         m.disk_byte_changes
