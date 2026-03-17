@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!("Starting frontcache router on {}", args.listen);
-    RouterServer::new(ring, args.block_size, args.server_port)
+    RouterServer::new(ring, args.block_size)
         .serve(args.listen)
         .await?;
 

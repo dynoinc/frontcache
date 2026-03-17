@@ -26,31 +26,24 @@ type HttpClient = HyperClient<hyper_util::client::legacy::connect::HttpConnector
 struct AppState {
     ring: Arc<Straw2Router>,
     block_size: u64,
-    server_port: u16,
     http_client: HttpClient,
 }
 
 pub struct RouterServer {
     ring: Arc<Straw2Router>,
     block_size: u64,
-    server_port: u16,
 }
 
 impl RouterServer {
-    pub fn new(ring: Arc<Straw2Router>, block_size: u64, server_port: u16) -> Self {
+    pub fn new(ring: Arc<Straw2Router>, block_size: u64) -> Self {
         assert!(block_size > 0, "block_size must be > 0");
-        Self {
-            ring,
-            block_size,
-            server_port,
-        }
+        Self { ring, block_size }
     }
 
     pub fn into_router(self) -> Router {
         let state = AppState {
             ring: self.ring,
             block_size: self.block_size,
-            server_port: self.server_port,
             http_client: {
                 let mut connector = hyper_util::client::legacy::connect::HttpConnector::new();
                 connector.set_nodelay(true);
@@ -144,7 +137,6 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let (object_size, etag, first_stream) = match fetch_block_with_meta(
         state.http_client.clone(),
         state.ring.clone(),
-        state.server_port,
         key.clone(),
         first,
     )
@@ -173,31 +165,24 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 
     let client = state.http_client.clone();
     let ring = state.ring.clone();
-    let server_port = state.server_port;
     let key_clone = key.clone();
 
-    let rest_stream = stream::iter(remaining_reads)
-        .map(move |(block_offset, read_offset, read_len)| {
-            let client = client.clone();
-            let ring = ring.clone();
-            let key = key_clone.clone();
-            async move {
-                fetch_block(
-                    client,
-                    ring,
-                    server_port,
-                    key,
-                    (block_offset, read_offset, read_len),
-                )
-                .await
-            }
-        })
-        .buffered(PREFETCH_BLOCKS)
-        .map(|result| match result {
-            Ok(chunk_stream) => Either::Left(chunk_stream),
-            Err(e) => Either::Right(stream::once(async move { Err(std::io::Error::other(e)) })),
-        })
-        .flatten();
+    let rest_stream =
+        stream::iter(remaining_reads)
+            .map(move |(block_offset, read_offset, read_len)| {
+                let client = client.clone();
+                let ring = ring.clone();
+                let key = key_clone.clone();
+                async move {
+                    fetch_block(client, ring, key, (block_offset, read_offset, read_len)).await
+                }
+            })
+            .buffered(PREFETCH_BLOCKS)
+            .map(|result| match result {
+                Ok(chunk_stream) => Either::Left(chunk_stream),
+                Err(e) => Either::Right(stream::once(async move { Err(std::io::Error::other(e)) })),
+            })
+            .flatten();
 
     let body_stream = first_stream.chain(rest_stream);
 
@@ -225,35 +210,29 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     builder.body(Body::from_stream(body_stream)).unwrap()
 }
 
-fn build_block_request(ip: &str, server_port: u16, key: &str, range: &str) -> http::Request<Body> {
-    let uri = format!("http://{}:{}{}", ip, server_port, key);
-    http::Request::builder()
-        .uri(uri)
-        .header("Range", range)
-        .body(Body::empty())
-        .unwrap()
-}
-
 async fn try_fetch(
     client: &HttpClient,
-    ip: &str,
-    server_port: u16,
+    addr: SocketAddr,
     key: &str,
     range: &str,
 ) -> Result<http::Response<hyper::body::Incoming>, anyhow::Error> {
-    let req = build_block_request(ip, server_port, key, range);
+    let uri = format!("http://{}{}", addr, key);
+    let req = http::Request::builder()
+        .uri(uri)
+        .header("Range", range)
+        .body(Body::empty())
+        .unwrap();
     let resp = client.request(req).await?;
     if resp.status().is_success() || resp.status() == StatusCode::PARTIAL_CONTENT {
         Ok(resp)
     } else {
-        anyhow::bail!("server {} returned {}", ip, resp.status())
+        anyhow::bail!("server {} returned {}", addr, resp.status())
     }
 }
 
 async fn fetch_raw_block(
     client: &HttpClient,
     ring: &Straw2Router,
-    server_port: u16,
     key: &str,
     (block_offset, read_offset, read_len): (u64, u64, u64),
 ) -> Result<http::Response<hyper::body::Incoming>, anyhow::Error> {
@@ -263,9 +242,8 @@ async fn fetch_raw_block(
 
     let range = format!("bytes={}-{}", read_offset, read_offset + read_len - 1);
     let mut last_err = None;
-    for addr in &addrs {
-        let ip = addr.split(':').next().unwrap_or(addr);
-        match try_fetch(client, ip, server_port, key, &range).await {
+    for &addr in &addrs {
+        match try_fetch(client, addr, key, &range).await {
             Ok(resp) => return Ok(resp),
             Err(e) => last_err = Some(e),
         }
@@ -291,7 +269,6 @@ fn parse_content_range_total(headers: &http::HeaderMap) -> Option<u64> {
 async fn fetch_block_with_meta(
     client: HttpClient,
     ring: Arc<Straw2Router>,
-    server_port: u16,
     key: String,
     block: (u64, u64, u64),
 ) -> Result<
@@ -302,7 +279,7 @@ async fn fetch_block_with_meta(
     ),
     anyhow::Error,
 > {
-    let resp = fetch_raw_block(&client, &ring, server_port, &key, block).await?;
+    let resp = fetch_raw_block(&client, &ring, &key, block).await?;
     let object_size = parse_content_range_total(resp.headers())
         .ok_or_else(|| anyhow::anyhow!("server response missing Content-Range header"))?;
     let etag = resp
@@ -318,10 +295,9 @@ async fn fetch_block_with_meta(
 async fn fetch_block(
     client: HttpClient,
     ring: Arc<Straw2Router>,
-    server_port: u16,
     key: String,
     block: (u64, u64, u64),
 ) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>, anyhow::Error> {
-    let resp = fetch_raw_block(&client, &ring, server_port, &key, block).await?;
+    let resp = fetch_raw_block(&client, &ring, &key, block).await?;
     Ok(into_byte_stream(resp))
 }

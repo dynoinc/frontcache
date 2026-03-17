@@ -86,7 +86,7 @@ impl Straw2Router {
         record_metrics(len, action);
     }
 
-    pub fn get_owners(&self, object: &str, block_offset: u64) -> Option<Vec<String>> {
+    pub fn get_owners(&self, object: &str, block_offset: u64) -> Option<Vec<SocketAddr>> {
         let snap = self.snapshot.read().clone();
         if snap.nodes.is_empty() {
             return None;
@@ -99,7 +99,7 @@ impl Straw2Router {
         let addrs = snap.table[vp]
             .iter()
             .filter(|&&idx| idx != u16::MAX)
-            .map(|&idx| snap.nodes[idx as usize].ip_addr.to_string())
+            .map(|&idx| snap.nodes[idx as usize].ip_addr)
             .collect::<Vec<_>>();
         Some(addrs)
     }
