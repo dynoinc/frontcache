@@ -77,26 +77,33 @@ impl Store {
             return Ok(backend.clone());
         }
 
-        let backend: Arc<dyn ObjStore> = match provider {
-            "s3" => {
-                let s3 = AmazonS3Builder::from_env()
-                    .with_bucket_name(bucket)
-                    .build()
-                    .map_err(StoreError::Backend)?;
-                Arc::new(s3)
+        // Use entry API to avoid TOCTOU race where concurrent requests
+        // for the same bucket could each create a separate backend.
+        let entry = self.backends.entry(cache_key);
+        let backend = match entry {
+            dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                let b: Arc<dyn ObjStore> = match provider {
+                    "s3" => {
+                        let s3 = AmazonS3Builder::from_env()
+                            .with_bucket_name(bucket)
+                            .build()
+                            .map_err(StoreError::Backend)?;
+                        Arc::new(s3)
+                    }
+                    "gs" => {
+                        let gcs = GoogleCloudStorageBuilder::from_env()
+                            .with_bucket_name(bucket)
+                            .build()
+                            .map_err(StoreError::Backend)?;
+                        Arc::new(gcs)
+                    }
+                    "inmem" => Arc::new(InMemory::new()),
+                    _ => return Err(StoreError::UnsupportedProvider(provider.to_string())),
+                };
+                e.insert(b).clone()
             }
-            "gs" => {
-                let gcs = GoogleCloudStorageBuilder::from_env()
-                    .with_bucket_name(bucket)
-                    .build()
-                    .map_err(StoreError::Backend)?;
-                Arc::new(gcs)
-            }
-            "inmem" => Arc::new(InMemory::new()),
-            _ => return Err(StoreError::UnsupportedProvider(provider.to_string())),
         };
-
-        self.backends.insert(cache_key, backend.clone());
         Ok(backend)
     }
 
