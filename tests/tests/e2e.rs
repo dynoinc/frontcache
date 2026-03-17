@@ -237,15 +237,14 @@ async fn range_read_fuzz() -> Result<()> {
 async fn not_found() -> Result<()> {
     let c = start_cluster().await?;
 
-    let result = read_all(
-        &c.client,
-        &c.base_url,
-        &object_key("test/missing.dat"),
-        0,
-        1024,
-    )
-    .await;
-    assert!(result.is_err());
+    let url = format!("{}{}", c.base_url, object_key("test/missing.dat"));
+    let resp = c
+        .client
+        .get(&url)
+        .header("Range", "bytes=0-1023")
+        .send()
+        .await?;
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
     Ok(())
 }
 

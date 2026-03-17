@@ -167,7 +167,15 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     .await
     {
         Ok(v) => v,
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(e) => {
+            let status = match &e {
+                FetchError::ServerStatus(_, s) if *s == StatusCode::NOT_FOUND => {
+                    StatusCode::NOT_FOUND
+                }
+                _ => StatusCode::SERVICE_UNAVAILABLE,
+            };
+            return (status, format!("{e}")).into_response();
+        }
     };
 
     if offset >= object_size {
