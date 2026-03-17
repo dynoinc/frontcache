@@ -101,17 +101,18 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
-/// Compute block-aligned reads: Vec<(block_offset, read_offset, read_len)>
-fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
-    let mut reads = Vec::new();
+fn block_reads(offset: u64, end: u64, bs: u64) -> impl Iterator<Item = (u64, u64, u64)> {
     let mut current = offset;
-    while current < end {
+    std::iter::from_fn(move || {
+        if current >= end {
+            return None;
+        }
         let block_offset = (current / bs) * bs;
         let read_end = end.min(block_offset + bs);
-        reads.push((block_offset, current, read_end - current));
+        let item = (block_offset, current, read_end - current);
         current = read_end;
-    }
-    reads
+        Some(item)
+    })
 }
 
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
@@ -188,7 +189,7 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     }
 
     let content_len = end - offset;
-    let remaining_reads: Vec<_> = block_reads(offset, end, bs).into_iter().skip(1).collect();
+    let remaining_reads = block_reads(offset, end, bs).skip(1);
 
     let client = state.http_client.clone();
     let ring = state.ring.clone();
