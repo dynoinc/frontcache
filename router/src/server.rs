@@ -119,6 +119,10 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+fn extract_key(req: &Request) -> String {
+    format!("/{}", req.uri().path().trim_start_matches('/'))
+}
+
 fn parse_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
     let range = headers.get(header::RANGE)?.to_str().ok()?;
     let range = range.strip_prefix("bytes=")?;
@@ -168,7 +172,7 @@ async fn get_or_list(
 }
 
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let key = extract_key(&req);
     let headers = req.headers().clone();
     let range = parse_range(&headers);
     let (offset, requested_end) = range.unwrap_or_default();
@@ -376,7 +380,7 @@ async fn fetch_block(
 }
 
 async fn head_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let key = extract_key(&req);
     match state.store.head(&key).await {
         Ok((size, etag)) => Response::builder()
             .status(StatusCode::OK)
@@ -460,7 +464,7 @@ async fn put_handler(
 }
 
 async fn put_object(state: AppState, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let key = extract_key(&req);
     let body = match axum::body::to_bytes(req.into_body(), 512 * 1024 * 1024).await {
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("{}", e)).into_response(),
@@ -480,7 +484,7 @@ async fn put_object(state: AppState, req: Request) -> Response {
 }
 
 async fn delete_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let key = extract_key(&req);
     match state.store.delete(&key).await {
         Ok(()) => Response::builder()
             .status(StatusCode::NO_CONTENT)
@@ -513,7 +517,7 @@ async fn post_handler(
 }
 
 async fn create_multipart(state: AppState, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let key = extract_key(&req);
     let bucket = key
         .strip_prefix('/')
         .and_then(|s| s.split('/').next())
