@@ -72,6 +72,17 @@ pub fn init() {
         store_read_bytes: meter
             .f64_histogram("store_read_bytes")
             .with_description("Bytes read from upstream store")
+            .with_boundaries(vec![
+                1024.0,       // 1 KB
+                4096.0,       // 4 KB
+                16_384.0,     // 16 KB
+                65_536.0,     // 64 KB
+                262_144.0,    // 256 KB
+                1_048_576.0,  // 1 MB
+                4_194_304.0,  // 4 MB
+                16_777_216.0, // 16 MB
+                67_108_864.0, // 64 MB
+            ])
             .build(),
 
         cache_duration: meter
