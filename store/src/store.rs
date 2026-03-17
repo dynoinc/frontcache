@@ -5,8 +5,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use object_store::memory::InMemory;
 use object_store::{
-    Error as ObjectStoreError, GetOptions, MultipartUpload, ObjectStore as ObjStore,
-    ObjectStoreExt, PutMultipartOptions, PutPayload, PutResult, aws::AmazonS3Builder,
+    Error as ObjectStoreError, GetOptions, ObjectStore as ObjStore, aws::AmazonS3Builder,
     gcp::GoogleCloudStorageBuilder, path::Path as ObjPath,
 };
 use opentelemetry::KeyValue;
@@ -122,36 +121,6 @@ impl Store {
         }
     }
 
-    /// Returns (object_size, etag).
-    pub async fn head(&self, key: &str) -> Result<(u64, String), StoreError> {
-        let start = Instant::now();
-        let (provider, bucket, path) = self.parse_key(key)?;
-        let backend = self.get_backend(&provider, &bucket).await?;
-        let obj_path = ObjPath::from(path);
-
-        let opts = GetOptions {
-            head: true,
-            ..Default::default()
-        };
-        let result = backend
-            .get_opts(&obj_path, opts)
-            .await
-            .map_err(|e| StoreError::from_object_store(e, key));
-
-        let m = frontcache_metrics::get();
-        m.store_duration.record(
-            frontcache_metrics::elapsed_ms(start),
-            &[
-                KeyValue::new("provider", provider),
-                KeyValue::new("status", Self::status_label(&result)),
-                KeyValue::new("operation", "head"),
-            ],
-        );
-
-        let r = result?;
-        Ok((r.meta.size, Self::extract_e_tag(&r)))
-    }
-
     fn extract_e_tag(result: &object_store::GetResult) -> String {
         result
             .meta
@@ -213,52 +182,5 @@ impl Store {
             e_tag,
             object_size,
         })
-    }
-
-    pub async fn put(&self, key: &str, data: Bytes) -> Result<PutResult, StoreError> {
-        let (provider, bucket, path) = self.parse_key(key)?;
-        let backend = self.get_backend(&provider, &bucket).await?;
-        let obj_path = ObjPath::from(path);
-        backend
-            .put(&obj_path, PutPayload::from(data))
-            .await
-            .map_err(|e| StoreError::from_object_store(e, key))
-    }
-
-    pub async fn delete(&self, key: &str) -> Result<(), StoreError> {
-        let (provider, bucket, path) = self.parse_key(key)?;
-        let backend = self.get_backend(&provider, &bucket).await?;
-        let obj_path = ObjPath::from(path);
-        backend
-            .delete(&obj_path)
-            .await
-            .map_err(|e| StoreError::from_object_store(e, key))
-    }
-
-    pub async fn list(
-        &self,
-        bucket: &str,
-        prefix: Option<&str>,
-    ) -> Result<object_store::ListResult, StoreError> {
-        let provider = self.config.provider_for(bucket).to_string();
-        let backend = self.get_backend(&provider, bucket).await?;
-        let obj_prefix = prefix.map(ObjPath::from);
-        backend
-            .list_with_delimiter(obj_prefix.as_ref())
-            .await
-            .map_err(StoreError::Backend)
-    }
-
-    pub async fn create_multipart(
-        &self,
-        key: &str,
-    ) -> Result<Box<dyn MultipartUpload>, StoreError> {
-        let (provider, bucket, path) = self.parse_key(key)?;
-        let backend = self.get_backend(&provider, &bucket).await?;
-        let obj_path = ObjPath::from(path);
-        backend
-            .put_multipart_opts(&obj_path, PutMultipartOptions::default())
-            .await
-            .map_err(|e| StoreError::from_object_store(e, key))
     }
 }

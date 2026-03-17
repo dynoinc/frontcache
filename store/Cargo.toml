@@ -8,7 +8,6 @@ frontcache-metrics = { path = "../metrics" }
 object_store = { workspace = true }
 dashmap = { workspace = true }
 bytes = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
