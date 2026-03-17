@@ -252,7 +252,7 @@ async fn try_fetch(
         .body(Body::empty())
         .unwrap();
     let resp = client.request(req).await?;
-    if resp.status().is_success() || resp.status() == StatusCode::PARTIAL_CONTENT {
+    if resp.status().is_success() {
         Ok(resp)
     } else {
         Err(FetchError::ServerStatus(addr, resp.status()))
