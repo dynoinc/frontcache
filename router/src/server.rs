@@ -181,12 +181,7 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
 
     let end = requested_end.map_or(object_size, |e| e.min(object_size));
     if end <= offset {
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_LENGTH, "0")],
-            Body::empty(),
-        )
-            .into_response();
+        return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
     }
 
     let content_len = end - offset;
