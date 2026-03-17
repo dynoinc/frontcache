@@ -66,7 +66,11 @@ impl Disk {
     }
 
     pub fn sub_used(&self, bytes: u64) {
-        self.used.fetch_sub(bytes, Ordering::Relaxed);
+        self.used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(bytes))
+            })
+            .unwrap();
     }
 }
 

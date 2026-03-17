@@ -5,7 +5,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Request, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
     serve::ListenerExt,
@@ -76,21 +76,6 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
-/// Parse HTTP Range header: `bytes=N-M` or `bytes=N-`
-/// Returns (offset, Option<end_exclusive>)
-fn parse_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
-    let range = headers.get(header::RANGE)?.to_str().ok()?;
-    let range = range.strip_prefix("bytes=")?;
-    let (start, end) = range.split_once('-')?;
-    let start: u64 = start.parse().ok()?;
-    let end = if end.is_empty() {
-        None
-    } else {
-        Some(end.parse::<u64>().ok()? + 1) // HTTP range end is inclusive, convert to exclusive
-    };
-    Some((start, end))
-}
-
 fn cache_error_to_response(e: CacheError) -> Response {
     let msg = format!("{:?}", e);
     let status = match &e {
@@ -108,10 +93,39 @@ fn cache_error_to_response(e: CacheError) -> Response {
 }
 
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = format!("/{}", req.uri().path().trim_start_matches('/'));
-    let headers = req.headers().clone();
-
-    let (offset, end) = parse_range(&headers).unwrap_or_default();
+    let key = req.uri().path().to_string();
+    let range = if let Some(range_hdr) = req.headers().get(header::RANGE) {
+        let raw = range_hdr.to_str().unwrap_or("<non-ascii>");
+        let parsed = (|| {
+            let s = range_hdr.to_str().ok()?;
+            let s = s.strip_prefix("bytes=")?;
+            let (start, end) = s.split_once('-')?;
+            let start: u64 = start.parse().ok()?;
+            let end = if end.is_empty() {
+                None
+            } else {
+                let end = end.parse::<u64>().ok()?.checked_add(1)?;
+                if end <= start {
+                    return None;
+                }
+                Some(end)
+            };
+            Some((start, end))
+        })();
+        match parsed {
+            Some(r) => Some(r),
+            None => {
+                return (
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    format!("invalid Range header: {raw}"),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    let (offset, end) = range.unwrap_or_default();
 
     let hit = match state.cache.get(&key, offset).await {
         Ok(hit) => hit,
