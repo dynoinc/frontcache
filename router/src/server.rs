@@ -5,7 +5,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Request, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
     serve::ListenerExt,
@@ -93,30 +93,6 @@ fn extract_key(req: &Request) -> String {
     format!("/{}", req.uri().path().trim_start_matches('/'))
 }
 
-/// Parse a Range header into (start, exclusive_end).
-/// Returns `None` if no Range header is present.
-/// Returns `Some(None)` if the header is malformed.
-fn parse_range(headers: &HeaderMap) -> Option<Option<(u64, Option<u64>)>> {
-    let range = headers.get(header::RANGE)?;
-    let parse = || {
-        let range = range.to_str().ok()?;
-        let range = range.strip_prefix("bytes=")?;
-        let (start, end) = range.split_once('-')?;
-        let start: u64 = start.parse().ok()?;
-        let end = if end.is_empty() {
-            None
-        } else {
-            let end = end.parse::<u64>().ok()?.checked_add(1)?;
-            if end <= start {
-                return None;
-            }
-            Some(end)
-        };
-        Some((start, end))
-    };
-    Some(parse())
-}
-
 /// Compute block-aligned reads: Vec<(block_offset, read_offset, read_len)>
 fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
     let mut reads = Vec::new();
@@ -133,12 +109,36 @@ fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let key = extract_key(&req);
     let headers = req.headers().clone();
-    let range = match parse_range(&headers) {
-        Some(Some(r)) => Some(r),
-        Some(None) => {
-            return (StatusCode::RANGE_NOT_SATISFIABLE, "malformed Range header").into_response();
+    let range = if let Some(range_hdr) = headers.get(header::RANGE) {
+        let raw = range_hdr.to_str().unwrap_or("<non-ascii>");
+        let parsed = (|| {
+            let s = range_hdr.to_str().ok()?;
+            let s = s.strip_prefix("bytes=")?;
+            let (start, end) = s.split_once('-')?;
+            let start: u64 = start.parse().ok()?;
+            let end = if end.is_empty() {
+                None
+            } else {
+                let end = end.parse::<u64>().ok()?.checked_add(1)?;
+                if end <= start {
+                    return None;
+                }
+                Some(end)
+            };
+            Some((start, end))
+        })();
+        match parsed {
+            Some(r) => Some(r),
+            None => {
+                return (
+                    StatusCode::RANGE_NOT_SATISFIABLE,
+                    format!("invalid Range header: {raw}"),
+                )
+                    .into_response();
+            }
         }
-        None => None,
+    } else {
+        None
     };
     let (offset, requested_end) = range.unwrap_or_default();
 
