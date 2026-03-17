@@ -135,7 +135,7 @@ impl Store {
 
         let m = frontcache_metrics::get();
         m.store_duration.record(
-            start.elapsed().as_secs_f64() * 1000.0,
+            frontcache_metrics::elapsed_ms(start),
             &[
                 KeyValue::new("provider", provider),
                 KeyValue::new("status", Self::status_label(&result)),
@@ -181,7 +181,7 @@ impl Store {
 
         let m = frontcache_metrics::get();
         m.store_duration.record(
-            start.elapsed().as_secs_f64() * 1000.0,
+            frontcache_metrics::elapsed_ms(start),
             &[
                 KeyValue::new("provider", provider_label),
                 KeyValue::new("status", Self::status_label(&result)),

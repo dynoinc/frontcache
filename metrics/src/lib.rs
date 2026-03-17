@@ -113,6 +113,10 @@ pub fn shutdown() -> opentelemetry_sdk::error::OTelSdkResult {
     Ok(())
 }
 
+pub fn elapsed_ms(start: std::time::Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.0
+}
+
 pub fn get() -> &'static Metrics {
     METRICS
         .get()
@@ -181,7 +185,7 @@ where
             };
 
             get().http_duration.record(
-                start.elapsed().as_secs_f64() * 1000.0,
+                elapsed_ms(start),
                 &[
                     KeyValue::new("operation", operation),
                     KeyValue::new("http.status", status),

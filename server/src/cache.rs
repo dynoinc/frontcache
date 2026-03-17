@@ -301,7 +301,7 @@ impl Cache {
                 Ok(reader) => {
                     let m = frontcache_metrics::get();
                     m.cache_duration.record(
-                        start.elapsed().as_secs_f64() * 1000.0,
+                        frontcache_metrics::elapsed_ms(start),
                         &[
                             KeyValue::new("result", "hit"),
                             KeyValue::new("operation", "get"),
@@ -345,7 +345,7 @@ impl Cache {
 
                 let m = frontcache_metrics::get();
                 m.cache_duration.record(
-                    start.elapsed().as_secs_f64() * 1000.0,
+                    frontcache_metrics::elapsed_ms(start),
                     &[
                         KeyValue::new("result", "wait"),
                         KeyValue::new("operation", "get"),
@@ -394,7 +394,7 @@ impl Cache {
                     Err(_) => "error",
                 };
                 m.cache_duration.record(
-                    start.elapsed().as_secs_f64() * 1000.0,
+                    frontcache_metrics::elapsed_ms(start),
                     &[
                         KeyValue::new("result", label),
                         KeyValue::new("operation", "get"),
@@ -632,7 +632,7 @@ impl Cache {
         m.disk_byte_changes
             .add(deleted_bytes, &[KeyValue::new("action", "purged")]);
         m.purge_duration
-            .record(start.elapsed().as_secs_f64() * 1000.0, &[]);
+            .record(frontcache_metrics::elapsed_ms(start), &[]);
 
         Ok(())
     }
@@ -649,6 +649,6 @@ impl Cache {
 
         frontcache_metrics::get()
             .flush_duration
-            .record(start.elapsed().as_secs_f64() * 1000.0, &[]);
+            .record(frontcache_metrics::elapsed_ms(start), &[]);
     }
 }
