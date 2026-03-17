@@ -158,6 +158,7 @@ impl Cache {
         block_size: u64,
     ) -> Self {
         assert!(block_size > 0, "block_size must be > 0");
+        assert!(!disks.is_empty(), "at least one disk is required");
         Self {
             states: DashMap::new(),
             dirty: Mutex::new(HashMap::new()),
