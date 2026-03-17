@@ -349,7 +349,8 @@ async fn fetch_block_with_meta(
     anyhow::Error,
 > {
     let resp = fetch_raw_block(&client, &ring, server_port, &key, block).await?;
-    let object_size = parse_content_range_total(resp.headers()).unwrap_or(0);
+    let object_size = parse_content_range_total(resp.headers())
+        .ok_or_else(|| anyhow::anyhow!("server response missing Content-Range header"))?;
     let etag = resp
         .headers()
         .get(header::ETAG)
