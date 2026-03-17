@@ -4,24 +4,19 @@ use std::sync::Arc;
 use axum::{
     Router,
     body::Body,
-    extract::{Query, Request, State},
+    extract::{Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
     serve::ListenerExt,
 };
-use dashmap::DashMap;
 use futures_util::future::Either;
 use futures_util::{StreamExt, stream};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
-use object_store::MultipartUpload;
-use serde::Deserialize;
-use tokio::sync::Mutex;
 
 use crate::ring::Straw2Router;
-use frontcache_store::Store;
 
 const PREFETCH_BLOCKS: usize = 16;
 
@@ -33,30 +28,21 @@ struct AppState {
     block_size: u64,
     server_port: u16,
     http_client: HttpClient,
-    store: Arc<Store>,
-    uploads: Arc<DashMap<String, Mutex<Box<dyn MultipartUpload>>>>,
 }
 
 pub struct RouterServer {
     ring: Arc<Straw2Router>,
     block_size: u64,
     server_port: u16,
-    store: Arc<Store>,
 }
 
 impl RouterServer {
-    pub fn new(
-        ring: Arc<Straw2Router>,
-        block_size: u64,
-        server_port: u16,
-        store: Arc<Store>,
-    ) -> Self {
+    pub fn new(ring: Arc<Straw2Router>, block_size: u64, server_port: u16) -> Self {
         assert!(block_size > 0, "block_size must be > 0");
         Self {
             ring,
             block_size,
             server_port,
-            store,
         }
     }
 
@@ -70,19 +56,10 @@ impl RouterServer {
                 connector.set_nodelay(true);
                 HyperClient::builder(TokioExecutor::new()).build(connector)
             },
-            store: self.store,
-            uploads: Arc::new(DashMap::new()),
         };
         Router::new()
             .route("/healthz", get(healthz))
-            .route(
-                "/{*key}",
-                get(get_or_list)
-                    .head(head_object)
-                    .put(put_handler)
-                    .delete(delete_object)
-                    .post(post_handler),
-            )
+            .route("/{*key}", get(get_object))
             .layer(frontcache_metrics::layer())
             .with_state(state)
     }
@@ -147,28 +124,6 @@ fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
         current = read_end;
     }
     reads
-}
-
-/// GET /{bucket} — could be ListObjectsV2 or GetObject for a bucket-named key
-#[derive(Deserialize)]
-struct ListParams {
-    #[serde(rename = "list-type")]
-    list_type: Option<String>,
-    prefix: Option<String>,
-    #[allow(dead_code)]
-    delimiter: Option<String>,
-}
-
-async fn get_or_list(
-    State(state): State<AppState>,
-    Query(params): Query<ListParams>,
-    req: Request,
-) -> Response {
-    let path = req.uri().path().trim_start_matches('/');
-    if !path.contains('/') && params.list_type.as_deref() == Some("2") {
-        return list_objects(state, path, params).await;
-    }
-    get_object(State(state), req).await
 }
 
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
@@ -369,234 +324,4 @@ async fn fetch_block(
 ) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>, anyhow::Error> {
     let resp = fetch_raw_block(&client, &ring, server_port, &key, block).await?;
     Ok(into_byte_stream(resp))
-}
-
-async fn head_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = extract_key(&req);
-    match state.store.head(&key).await {
-        Ok((size, etag)) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_LENGTH, size.to_string())
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .header(header::ETAG, format!("\"{}\"", etag))
-            .header(header::ACCEPT_RANGES, "bytes")
-            .header(frontcache_metrics::OP_HEADER, "HeadObject")
-            .body(Body::empty())
-            .unwrap(),
-        Err(e) => {
-            let status = match &e {
-                frontcache_store::StoreError::NotFound(_) => StatusCode::NOT_FOUND,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (status, format!("{e}")).into_response()
-        }
-    }
-}
-
-async fn list_objects(state: AppState, bucket: &str, params: ListParams) -> Response {
-    let prefix = params.prefix.as_deref();
-    match state.store.list(bucket, prefix).await {
-        Ok(result) => {
-            use std::fmt::Write;
-            let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-            xml.push_str("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
-            let _ = write!(xml, "<Name>{}</Name>", bucket);
-            if let Some(p) = prefix {
-                let _ = write!(xml, "<Prefix>{}</Prefix>", p);
-            }
-            xml.push_str("<IsTruncated>false</IsTruncated>");
-            for obj in &result.objects {
-                xml.push_str("<Contents>");
-                let _ = write!(xml, "<Key>{}</Key>", obj.location);
-                let _ = write!(xml, "<Size>{}</Size>", obj.size);
-                let _ = write!(
-                    xml,
-                    "<LastModified>{}</LastModified>",
-                    obj.last_modified.to_rfc3339()
-                );
-                if let Some(ref etag) = obj.e_tag {
-                    let _ = write!(xml, "<ETag>{}</ETag>", etag);
-                }
-                xml.push_str("</Contents>");
-            }
-            for prefix in &result.common_prefixes {
-                let _ = write!(
-                    xml,
-                    "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
-                    prefix
-                );
-            }
-            xml.push_str("</ListBucketResult>");
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/xml")
-                .header(frontcache_metrics::OP_HEADER, "ListObjectsV2")
-                .body(Body::from(xml))
-                .unwrap()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", e)).into_response(),
-    }
-}
-
-#[derive(Deserialize)]
-struct PutParams {
-    #[serde(rename = "partNumber")]
-    part_number: Option<u32>,
-    #[serde(rename = "uploadId")]
-    upload_id: Option<String>,
-}
-
-async fn put_handler(
-    State(state): State<AppState>,
-    Query(params): Query<PutParams>,
-    req: Request,
-) -> Response {
-    if let (Some(_part_number), Some(upload_id)) = (params.part_number, params.upload_id.as_ref()) {
-        return upload_part(state, req, upload_id).await;
-    }
-    put_object(state, req).await
-}
-
-async fn put_object(state: AppState, req: Request) -> Response {
-    let key = extract_key(&req);
-    let body = match axum::body::to_bytes(req.into_body(), 512 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("{}", e)).into_response(),
-    };
-    match state.store.put(&key, body).await {
-        Ok(result) => {
-            let mut builder = Response::builder()
-                .status(StatusCode::OK)
-                .header(frontcache_metrics::OP_HEADER, "PutObject");
-            if let Some(etag) = result.e_tag {
-                builder = builder.header(header::ETAG, etag);
-            }
-            builder.body(Body::empty()).unwrap()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", e)).into_response(),
-    }
-}
-
-async fn delete_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = extract_key(&req);
-    match state.store.delete(&key).await {
-        Ok(()) => Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header(frontcache_metrics::OP_HEADER, "DeleteObject")
-            .body(Body::empty())
-            .unwrap(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", e)).into_response(),
-    }
-}
-
-#[derive(Deserialize)]
-struct PostParams {
-    uploads: Option<String>,
-    #[serde(rename = "uploadId")]
-    upload_id: Option<String>,
-}
-
-async fn post_handler(
-    State(state): State<AppState>,
-    Query(params): Query<PostParams>,
-    req: Request,
-) -> Response {
-    if params.uploads.is_some() {
-        return create_multipart(state, req).await;
-    }
-    if let Some(ref upload_id) = params.upload_id {
-        return complete_multipart(state, upload_id).await;
-    }
-    StatusCode::BAD_REQUEST.into_response()
-}
-
-async fn create_multipart(state: AppState, req: Request) -> Response {
-    let key = extract_key(&req);
-    let bucket = key
-        .strip_prefix('/')
-        .and_then(|s| s.split('/').next())
-        .unwrap_or("");
-    let obj_key = key
-        .strip_prefix('/')
-        .and_then(|s| s.split_once('/'))
-        .map(|(_, k)| k)
-        .unwrap_or("");
-
-    match state.store.create_multipart(&key).await {
-        Ok(upload) => {
-            let upload_id = uuid::Uuid::new_v4().to_string();
-            state.uploads.insert(upload_id.clone(), Mutex::new(upload));
-
-            let xml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
-                 <InitiateMultipartUploadResult>\
-                 <Bucket>{}</Bucket>\
-                 <Key>{}</Key>\
-                 <UploadId>{}</UploadId>\
-                 </InitiateMultipartUploadResult>",
-                bucket, obj_key, upload_id
-            );
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/xml")
-                .header(frontcache_metrics::OP_HEADER, "CreateMultipartUpload")
-                .body(Body::from(xml))
-                .unwrap()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", e)).into_response(),
-    }
-}
-
-async fn upload_part(state: AppState, req: Request, upload_id: &str) -> Response {
-    let body = match axum::body::to_bytes(req.into_body(), 512 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("{}", e)).into_response(),
-    };
-
-    let upload_entry = match state.uploads.get(upload_id) {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, "upload not found").into_response(),
-    };
-
-    let mut upload = upload_entry.lock().await;
-    let fut = upload.put_part(object_store::PutPayload::from(body));
-    match fut.await {
-        Ok(()) => Response::builder()
-            .status(StatusCode::OK)
-            .header(frontcache_metrics::OP_HEADER, "UploadPart")
-            .body(Body::empty())
-            .unwrap(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", e)).into_response(),
-    }
-}
-
-async fn complete_multipart(state: AppState, upload_id: &str) -> Response {
-    let (_, upload) = match state.uploads.remove(upload_id) {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, "upload not found").into_response(),
-    };
-
-    let mut upload = upload.into_inner();
-    match upload.complete().await {
-        Ok(result) => {
-            let etag = result.e_tag.unwrap_or_default();
-            let xml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
-                 <CompleteMultipartUploadResult>\
-                 <ETag>{}</ETag>\
-                 </CompleteMultipartUploadResult>",
-                etag
-            );
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/xml")
-                .header(frontcache_metrics::OP_HEADER, "CompleteMultipartUpload")
-                .body(Body::from(xml))
-                .unwrap()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", e)).into_response(),
-    }
 }

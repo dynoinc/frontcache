@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-frontcache-store = { path = "../store" }
 frontcache-metrics = { path = "../metrics" }
 axum = { workspace = true }
 bytes = { workspace = true }
@@ -25,9 +24,5 @@ opentelemetry = { workspace = true }
 futures-util = { workspace = true }
 xxhash-rust = { workspace = true }
 rayon = { workspace = true }
-dashmap = { workspace = true }
-uuid = { workspace = true }
-serde = { workspace = true }
 http = { workspace = true }
-object_store = { workspace = true }
 rustls = { workspace = true }

@@ -80,7 +80,7 @@ async fn start_cluster_with_block_size(block_size: u64) -> Result<TestCluster> {
     });
     let router_listener = TcpListener::bind("127.0.0.1:0").await?;
     let router_addr = router_listener.local_addr()?;
-    let router_app = RouterServer::new(ring, block_size, server_addr.port(), store).into_router();
+    let router_app = RouterServer::new(ring, block_size, server_addr.port()).into_router();
     tokio::spawn(async move {
         axum::serve(router_listener, router_app).await.unwrap();
     });
