@@ -57,9 +57,7 @@ async fn main() -> Result<()> {
         let ring_clone = ring.clone();
         let cancel = shutdown.clone();
         watcher_handle = Some(tokio::spawn(async move {
-            if let Err(e) = membership.watch_pods(ring_clone, cancel).await {
-                tracing::error!("Membership watcher failed: {}", e);
-            }
+            membership.watch_pods(ring_clone, cancel).await;
         }));
     } else {
         tracing::info!("No label selector configured, running in standalone mode");

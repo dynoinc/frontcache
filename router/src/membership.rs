@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
 use futures_util::stream::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::{
@@ -74,7 +73,7 @@ fn eligible(info: &PodInfo) -> Option<Node> {
 }
 
 impl K8sMembership {
-    pub async fn new(label_selector: String, port: u16) -> Result<Self> {
+    pub async fn new(label_selector: String, port: u16) -> Result<Self, kube::Error> {
         let client = Client::try_default().await?;
         let namespace = client.default_namespace().to_string();
 
@@ -88,11 +87,7 @@ impl K8sMembership {
         })
     }
 
-    pub async fn watch_pods(
-        self,
-        ring: Arc<Straw2Router>,
-        cancel: CancellationToken,
-    ) -> Result<()> {
+    pub async fn watch_pods(self, ring: Arc<Straw2Router>, cancel: CancellationToken) {
         let api: Api<Pod> = Api::namespaced(self.client, &self.namespace);
         let config = Config::default().labels(&self.label_selector);
         let mut watcher = std::pin::pin!(watcher(api, config).default_backoff());
@@ -106,9 +101,9 @@ impl K8sMembership {
                         tracing::error!("Watcher error: {}", e);
                         continue;
                     }
-                    None => return Ok(()),
+                    None => return,
                 },
-                _ = cancel.cancelled() => return Ok(()),
+                _ = cancel.cancelled() => return,
             };
             match event {
                 Event::Apply(pod) | Event::InitApply(pod) => {
