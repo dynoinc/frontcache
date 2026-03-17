@@ -178,11 +178,10 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     let (offset, requested_end) = range.unwrap_or_default();
 
     let bs = state.block_size;
-    // Start with an optimistic read list; we'll clamp after learning object_size.
-    let preliminary_end = requested_end.unwrap_or(offset + bs);
-    let reads = block_reads(offset, preliminary_end, bs);
-    let mut reads_iter = reads.into_iter();
-    let first = reads_iter.next().unwrap();
+    let first_block_offset = (offset / bs) * bs;
+    let first_read_len =
+        (first_block_offset + bs - offset).min(requested_end.unwrap_or(u64::MAX) - offset);
+    let first = (first_block_offset, offset, first_read_len);
 
     // Preflight: fetch the first block. The server response tells us
     // object_size and etag via Content-Range / ETag headers, avoiding
