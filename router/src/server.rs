@@ -204,7 +204,6 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
         return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
     }
 
-    // Now clamp end to actual object_size and recompute remaining reads.
     let end = requested_end.map_or(object_size, |e| e.min(object_size));
     if end <= offset {
         return (
@@ -216,7 +215,6 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     }
 
     let content_len = end - offset;
-    // Recompute full read list with clamped end, skip the first block we already fetched.
     let remaining_reads: Vec<_> = block_reads(offset, end, bs).into_iter().skip(1).collect();
 
     let client = state.http_client.clone();
@@ -273,7 +271,6 @@ async fn get_object(State(state): State<AppState>, req: Request) -> Response {
     builder.body(Body::from_stream(body_stream)).unwrap()
 }
 
-/// Build a GET request with Range header to a server pod.
 fn build_block_request(ip: &str, server_port: u16, key: &str, range: &str) -> http::Request<Body> {
     let uri = format!("http://{}:{}{}", ip, server_port, key);
     http::Request::builder()
@@ -283,7 +280,6 @@ fn build_block_request(ip: &str, server_port: u16, key: &str, range: &str) -> ht
         .unwrap()
 }
 
-/// Send a block fetch request, returning the response on success.
 async fn try_fetch(
     client: &HttpClient,
     ip: &str,
@@ -300,7 +296,6 @@ async fn try_fetch(
     }
 }
 
-/// Fetch a block from any available replica, returning the raw HTTP response.
 async fn fetch_raw_block(
     client: &HttpClient,
     ring: &Straw2Router,

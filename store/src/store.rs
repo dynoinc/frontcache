@@ -77,8 +77,6 @@ impl Store {
             return Ok(backend.clone());
         }
 
-        // Use entry API to avoid TOCTOU race where concurrent requests
-        // for the same bucket could each create a separate backend.
         let entry = self.backends.entry(cache_key);
         let backend = match entry {
             dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),

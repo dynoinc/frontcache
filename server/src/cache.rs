@@ -475,7 +475,6 @@ impl Cache {
             })?;
         let e_tag = read_result.e_tag.clone();
 
-        // Remove old block if present
         let old_block = self.states.get(obj_key).and_then(|slot| slot.block.clone());
         if let Some(old) = &old_block {
             for d in &self.disks {
