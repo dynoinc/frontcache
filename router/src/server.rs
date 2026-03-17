@@ -300,49 +300,36 @@ async fn try_fetch(
     }
 }
 
-/// Fetch a block and extract object_size + etag from the server's Content-Range / ETag headers.
-async fn fetch_block_with_meta(
-    client: HttpClient,
-    ring: Arc<Straw2Router>,
+/// Fetch a block from any available replica, returning the raw HTTP response.
+async fn fetch_raw_block(
+    client: &HttpClient,
+    ring: &Straw2Router,
     server_port: u16,
-    key: String,
+    key: &str,
     (block_offset, read_offset, read_len): (u64, u64, u64),
-) -> Result<
-    (
-        u64,
-        String,
-        impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>,
-    ),
-    anyhow::Error,
-> {
+) -> Result<http::Response<hyper::body::Incoming>, anyhow::Error> {
     let addrs = ring
-        .get_owners(&key, block_offset)
+        .get_owners(key, block_offset)
         .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
 
     let range = format!("bytes={}-{}", read_offset, read_offset + read_len - 1);
     let mut last_err = None;
     for addr in &addrs {
         let ip = addr.split(':').next().unwrap_or(addr);
-        match try_fetch(&client, ip, server_port, &key, &range).await {
-            Ok(resp) => {
-                let object_size = parse_content_range_total(resp.headers()).unwrap_or(0);
-                let etag = resp
-                    .headers()
-                    .get(header::ETAG)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .trim_matches('"')
-                    .to_string();
-                let body_stream = resp
-                    .into_body()
-                    .into_data_stream()
-                    .map(|r| r.map_err(std::io::Error::other));
-                return Ok((object_size, etag, body_stream));
-            }
+        match try_fetch(client, ip, server_port, key, &range).await {
+            Ok(resp) => return Ok(resp),
             Err(e) => last_err = Some(e),
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
+}
+
+fn into_byte_stream(
+    resp: http::Response<hyper::body::Incoming>,
+) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> {
+    resp.into_body()
+        .into_data_stream()
+        .map(|r| r.map_err(std::io::Error::other))
 }
 
 /// Parse the total size from a Content-Range header: "bytes 0-4095/52428800"
@@ -351,32 +338,42 @@ fn parse_content_range_total(headers: &http::HeaderMap) -> Option<u64> {
     val.rsplit_once('/')?.1.parse().ok()
 }
 
+/// Fetch a block and extract object_size + etag from the server's Content-Range / ETag headers.
+async fn fetch_block_with_meta(
+    client: HttpClient,
+    ring: Arc<Straw2Router>,
+    server_port: u16,
+    key: String,
+    block: (u64, u64, u64),
+) -> Result<
+    (
+        u64,
+        String,
+        impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>,
+    ),
+    anyhow::Error,
+> {
+    let resp = fetch_raw_block(&client, &ring, server_port, &key, block).await?;
+    let object_size = parse_content_range_total(resp.headers()).unwrap_or(0);
+    let etag = resp
+        .headers()
+        .get(header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim_matches('"')
+        .to_string();
+    Ok((object_size, etag, into_byte_stream(resp)))
+}
+
 async fn fetch_block(
     client: HttpClient,
     ring: Arc<Straw2Router>,
     server_port: u16,
     key: String,
-    (block_offset, read_offset, read_len): (u64, u64, u64),
+    block: (u64, u64, u64),
 ) -> Result<impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>>, anyhow::Error> {
-    let addrs = ring
-        .get_owners(&key, block_offset)
-        .ok_or_else(|| anyhow::anyhow!("no nodes available"))?;
-
-    let range = format!("bytes={}-{}", read_offset, read_offset + read_len - 1);
-    let mut last_err = None;
-    for addr in &addrs {
-        let ip = addr.split(':').next().unwrap_or(addr);
-        match try_fetch(&client, ip, server_port, &key, &range).await {
-            Ok(resp) => {
-                return Ok(resp
-                    .into_body()
-                    .into_data_stream()
-                    .map(|r| r.map_err(std::io::Error::other)));
-            }
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no owners")))
+    let resp = fetch_raw_block(&client, &ring, server_port, &key, block).await?;
+    Ok(into_byte_stream(resp))
 }
 
 async fn head_object(State(state): State<AppState>, req: Request) -> Response {
