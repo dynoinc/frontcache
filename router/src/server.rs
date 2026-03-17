@@ -101,10 +101,6 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
-fn extract_key(req: &Request) -> String {
-    format!("/{}", req.uri().path().trim_start_matches('/'))
-}
-
 /// Compute block-aligned reads: Vec<(block_offset, read_offset, read_len)>
 fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
     let mut reads = Vec::new();
@@ -119,9 +115,8 @@ fn block_reads(offset: u64, end: u64, bs: u64) -> Vec<(u64, u64, u64)> {
 }
 
 async fn get_object(State(state): State<AppState>, req: Request) -> Response {
-    let key = extract_key(&req);
-    let headers = req.headers().clone();
-    let range = if let Some(range_hdr) = headers.get(header::RANGE) {
+    let key = req.uri().path().to_string();
+    let range = if let Some(range_hdr) = req.headers().get(header::RANGE) {
         let raw = range_hdr.to_str().unwrap_or("<non-ascii>");
         let parsed = (|| {
             let s = range_hdr.to_str().ok()?;
