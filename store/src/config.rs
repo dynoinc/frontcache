@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -21,6 +20,14 @@ pub struct BucketConfig {
     pub buckets: HashMap<String, BucketEntry>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("failed to read config: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse config: {0}")]
+    Parse(#[from] serde_yaml::Error),
+}
+
 impl Default for BucketConfig {
     fn default() -> Self {
         Self {
@@ -31,7 +38,7 @@ impl Default for BucketConfig {
 }
 
 impl BucketConfig {
-    pub fn load(path: Option<&Path>) -> Result<Self> {
+    pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
         match path {
             Some(p) => {
                 let content = std::fs::read_to_string(p)?;
