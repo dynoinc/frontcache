@@ -1,46 +1,35 @@
 # FrontCache [![Check](https://github.com/dynoinc/frontcache/actions/workflows/check.yml/badge.svg)](https://github.com/dynoinc/frontcache/actions/workflows/check.yml)
 
-Distributed pull-through cache for object storage (S3/GCS) with an S3-compatible HTTP API.
+Distributed pull-through cache for object storage (S3/GCS).
 
 ## Features
 
-- S3-compatible HTTP API (GetObject, HeadObject, PutObject, DeleteObject, ListObjectsV2, multipart upload)
 - Block-based caching with configurable block size (default 16MB)
-- Straw2 hashing for distributed block ownership
-- Single-block reads redirected (307) to owning server; multi-block reads stitched by router
-- Kubernetes auto-discovery
-- Aligned direct I/O reads
-- OpenTelemetry metrics for observability
+- Straw2 consistent hashing for distributed block ownership across 262,144 virtual partitions
+- Multi-block reads stitched by router with prefetch
+- Kubernetes auto-discovery of server pods
+- Aligned direct I/O reads (O_DIRECT on Linux)
+- LRU eviction with configurable watermarks
 - Backend fetch rate limiting (concurrency, RPS, bandwidth)
+- OpenTelemetry metrics
 
 ## Architecture
 
 FrontCache runs as two binaries:
 
-- **frontcache-router** — S3-compatible gateway. Accepts standard HTTP requests (`GET`, `HEAD`, `PUT`, `DELETE`, `POST`) on `/<bucket>/<key>`. Cached reads (GET/HEAD) are routed to the server owning the block via straw2 hashing over 262,144 virtual partitions. Writes and listings pass through directly to the backend.
+- **frontcache-router** — HTTP gateway. Accepts `GET /<bucket>/<key>` requests with optional `Range` headers. Splits reads into block-aligned fetches and routes each block to the owning server via straw2 hashing. Streams the response back with prefetch buffering.
 - **frontcache-server** — data plane. Serves cached blocks via HTTP. Fetches from object storage on cache miss, serves from local disk on cache hit.
 
-Any S3-compatible client works out of the box — curl, boto3, AWS CLI, Spark, DuckDB, etc.
-
-### Supported Operations
-
-| Operation | HTTP | Router Behavior |
-|---|---|---|
-| GetObject | `GET /bucket/key` | Cached — 307 redirect (single block) or stitch (multi-block) |
-| GetObject + Range | `GET /bucket/key` + `Range` header | Cached — same as above |
-| HeadObject | `HEAD /bucket/key` | Cached — routes to server, returns headers |
-| ListObjectsV2 | `GET /bucket?list-type=2` | Pass-through to backend |
-| PutObject | `PUT /bucket/key` | Pass-through to backend |
-| DeleteObject | `DELETE /bucket/key` | Pass-through to backend |
-| CreateMultipartUpload | `POST /bucket/key?uploads` | Pass-through to backend |
-| UploadPart | `PUT /bucket/key?partNumber=N&uploadId=X` | Pass-through to backend |
-| CompleteMultipartUpload | `POST /bucket/key?uploadId=X` | Pass-through to backend |
+```
+Client → Router → Server (cache hit → disk)
+                        ↘ (cache miss → S3/GCS → disk → response)
+```
 
 ## Configuration
 
 ### Bucket Config
 
-A YAML file maps bucket names to storage providers. Both router and server accept `--bucket-config <path>`. If omitted, all buckets default to S3.
+A YAML file maps bucket names to storage providers. The server accepts `--bucket-config <path>`. If omitted, all buckets default to S3.
 
 ```yaml
 default_provider: s3
@@ -57,7 +46,6 @@ buckets:
 | `--label` | `` | Label selector for Kubernetes pod discovery |
 | `--server-port` | `8080` | Port that server pods listen on |
 | `--block-size` | `16777216` | Block size in bytes |
-| `--bucket-config` | (none) | Path to bucket config YAML |
 
 ### Server Flags (`frontcache-server`)
 
@@ -93,20 +81,11 @@ After each block download, the server checks disk usage. When a cache directory 
 ## Usage
 
 ```bash
+# Read a full object
+curl http://router:8081/my-bucket/path/to/file.bin -o file.bin
+
 # Read a range
 curl -H "Range: bytes=0-4095" http://router:8081/my-bucket/path/to/file.bin
-
-# Head request
-curl -I http://router:8081/my-bucket/path/to/file.bin
-
-# Upload a file
-curl -X PUT -T myfile.bin http://router:8081/my-bucket/path/to/file.bin
-
-# List objects
-curl "http://router:8081/my-bucket?list-type=2&prefix=path/"
-
-# Delete
-curl -X DELETE http://router:8081/my-bucket/path/to/file.bin
 ```
 
 ## Kubernetes
