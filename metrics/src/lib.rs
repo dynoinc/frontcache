@@ -176,7 +176,8 @@ where
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
         let start = Instant::now();
-        let inner = self.inner.clone();
+        let clone = self.inner.clone();
+        let inner = std::mem::replace(&mut self.inner, clone);
 
         Box::pin(async move {
             let result = inner.oneshot(req).await;
