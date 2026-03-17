@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
-use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
+use std::hash::Hasher;
+use xxhash_rust::xxh3::{Xxh3Default, xxh3_64_with_seed};
 
 const NUM_VPARTITIONS: usize = 1 << 18;
 const VP_MASK: u64 = NUM_VPARTITIONS as u64 - 1;
@@ -90,8 +91,11 @@ impl Straw2Router {
         if snap.nodes.is_empty() {
             return None;
         }
-        let key = format!("{}:{}", object, block_offset);
-        let vp = (xxh3_64(key.as_bytes()) & VP_MASK) as usize;
+        let mut h = Xxh3Default::new();
+        h.write(object.as_bytes());
+        h.write(b":");
+        h.write(&block_offset.to_le_bytes());
+        let vp = (h.finish() & VP_MASK) as usize;
         let addrs = snap.table[vp]
             .iter()
             .filter(|&&idx| idx != u16::MAX)
