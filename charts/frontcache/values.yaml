@@ -3,7 +3,7 @@ replicaCount:
   server: 3
 
 image:
-  repository: frontcache
+  repository: localhost/frontcache
   tag: dev
   pullPolicy: IfNotPresent
 

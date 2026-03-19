@@ -8,4 +8,4 @@ check:
 # Build docker image for local k8s testing (debug, cross-compiled for Linux)
 docker-build:
     cargo zigbuild --target aarch64-unknown-linux-gnu -p frontcache-server -p frontcache-router -p frontcache-loadgen
-    docker build --target dev -f Dockerfile -t frontcache:dev target/aarch64-unknown-linux-gnu/debug/
+    docker build --target dev -f Dockerfile -t localhost/frontcache:dev target/aarch64-unknown-linux-gnu/debug/
