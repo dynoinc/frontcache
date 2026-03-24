@@ -1,8 +1,16 @@
 # Run all checks and tests
-check:
+check: fmt cargo-check clippy test
+
+fmt:
     cargo fmt --all
+
+cargo-check:
     cargo check --all-targets --all-features
+
+clippy:
     cargo clippy --all-targets --all-features -- -D warnings
+
+test:
     cargo test --all-targets --all-features
 
 # Build docker image for local k8s testing (debug, cross-compiled for Linux)

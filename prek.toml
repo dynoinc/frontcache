@@ -1,5 +1,11 @@
+default_stages = ["pre-commit", "pre-push"]
+default_install_hook_types = ["pre-commit", "pre-push"]
+
 [[repos]]
 repo = "local"
 hooks = [
-    { id = "just", name = "just", entry = "just", language = "system", pass_filenames = false, always_run = true },
+    { id = "fmt", name = "cargo fmt", entry = "just fmt", language = "system", pass_filenames = false, always_run = true },
+    { id = "cargo-check", name = "cargo check", entry = "just cargo-check", language = "system", pass_filenames = false, always_run = true },
+    { id = "clippy", name = "clippy", entry = "just clippy", language = "system", pass_filenames = false, always_run = true },
+    { id = "test", name = "cargo test", entry = "just test", language = "system", pass_filenames = false, always_run = true },
 ]
